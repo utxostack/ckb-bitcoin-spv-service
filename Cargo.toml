@@ -1,0 +1,53 @@
+[package]
+name = "ckb-bitcoin-spv-service"
+version = "0.1.0"
+authors = ["Boyu Yang <yangby@cryptape.com>"]
+edition = "2021"
+license = "MIT"
+description = "A Bitcoin SPV service which works on CKB."
+homepage = "https://github.com/yangby-cryptape/ckb-bitcoin-spv-service"
+repository = "https://github.com/yangby-cryptape/ckb-bitcoin-spv-service"
+
+[dependencies]
+thiserror = "1.0"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+clap-verbosity-flag = "2.2"
+faster-hex = "0.9"
+zeroize = { version = "1.7", features = ["derive"] }
+url = "2.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+reqwest = { version = "0.11", default-features = false, features = ["json", "blocking"] }
+jsonrpc-core         = "18.0"
+jsonrpc-derive       = "18.0"
+jsonrpc-http-server  = "18.0"
+jsonrpc-server-utils = "18.0"
+tokio = { version = "1.36", features = ["rt-multi-thread", "full"] }
+rocksdb = { package = "ckb-rocksdb", version ="=0.21.1", features = ["snappy"], default-features = false }
+secp256k1 = "0.24"
+
+bitcoin = { version = "0.31", features = ["serde"] }
+ckb-sdk = "3.1"
+ckb-types         = "0.114"
+ckb-jsonrpc-types = "0.114"
+ckb-hash          = "0.114"
+
+[dependencies.ckb-bitcoin-spv-verifier]
+version = "0.1.0"
+git = "https://github.com/ckb-cell/ckb-bitcoin-spv"
+rev = "2464c8f"
+
+[features]
+default = ["default-tls"]
+default-tls = ["ckb-sdk/default-tls", "reqwest/default-tls"]
+native-tls-vendored = ["ckb-sdk/native-tls-vendored", "reqwest/native-tls-vendored"]
+rustls-tls = ["ckb-sdk/rustls-tls", "reqwest/rustls-tls"]
+
+# TODO Remove this after `ckb-sdk>3.1` released.
+[patch.crates-io.ckb-sdk]
+git = "https://github.com/nervosnetwork/ckb-sdk-rust"
+rev = "b792ee7"
