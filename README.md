@@ -1,6 +1,7 @@
 # CKB Bitcoin SPV Service
 
 [![License]](#license)
+[![GitHub Actions]](https://github.com/yangby-cryptape/ckb-bitcoin-spv-service/actions)
 
 > [!WARNING]
 > This repository is still in the proof-of-concept stage.
@@ -10,6 +11,7 @@ and provides an API to generate proofs for [Bitcoin] transactions so that
 they can be verified on [CKB].
 
 [License]: https://img.shields.io/badge/License-MIT-blue.svg
+[GitHub Actions]: https://github.com/yangby-cryptape/ckb-bitcoin-spv-service/workflows/CI/badge.svg
 
 ## Usage
 
