@@ -30,14 +30,19 @@ impl Clone for BitcoinClient {
     }
 }
 
+#[derive(Serialize, Clone, Copy)]
+struct ZeroElemTuple();
+
 // ### Warning
 //
 // If parameters contain only one parameter:
 // - `serde_json::to_value(($($arg,)+))`
 // - `serde_json::to_value(($($arg),+))`
 // are different.
+//
+// Ref: https://github.com/serde-rs/serde/issues/1309
 macro_rules! serialize_parameters {
-    () => ( serde_json::Value::Null );
+    () => ( serde_json::to_value(ZeroElemTuple())?);
     ($($arg:ident),+) => ( serde_json::to_value(($($arg,)+))?)
 }
 
