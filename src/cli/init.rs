@@ -3,7 +3,10 @@
 use std::{collections::HashMap, path::PathBuf};
 
 use bitcoin::blockdata::constants::DIFFCHANGE_INTERVAL;
-use ckb_bitcoin_spv_verifier::types::{core::Hash as BitcoinHash, packed, prelude::Pack as VPack};
+use ckb_bitcoin_spv_verifier::{
+    constants::FLAG_DISABLE_DIFFICULTY_CHECK,
+    types::{core::Hash as BitcoinHash, packed, prelude::Pack as VPack},
+};
 use ckb_jsonrpc_types::TransactionView;
 use ckb_sdk::{
     core::TransactionBuilder,
@@ -82,6 +85,15 @@ pub struct Args {
     /// The owner of Bitcoin SPV cells.
     #[arg(long, value_parser = value_parsers::AddressValueParser)]
     pub(crate) spv_owner: CkbAddress,
+
+    /// Disable the on-chain difficulty check.
+    ///
+    /// Warning
+    ///
+    /// For testing purpose only.
+    /// Do NOT enable this flag in production environment.
+    #[arg(long)]
+    pub(crate) disable_difficulty_check: bool,
 
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
@@ -164,9 +176,14 @@ impl Args {
             let cells_count = usize::from(self.spv_clients_count) + 1;
             let type_id_array = calculate_type_id(input0.cell_input(), cells_count);
             let type_id = BitcoinHash::from_bytes_ref(&type_id_array);
+            let mut flags = 0u8;
+            if self.disable_difficulty_check {
+                flags |= FLAG_DISABLE_DIFFICULTY_CHECK;
+            }
             let args = packed::SpvTypeArgs::new_builder()
                 .type_id(type_id.pack())
                 .clients_count(self.spv_clients_count.into())
+                .flags(flags.into())
                 .build();
             Script::new_builder()
                 .code_hash(self.spv_contract_data_hash.pack())
