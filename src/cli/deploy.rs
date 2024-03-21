@@ -62,10 +62,10 @@ pub struct Args {
 impl Args {
     // TODO Deploy the Bitcoin SPV contract as type script.
     pub fn execute(&self) -> Result<()> {
-        log::info!("Try to deploy a contract on CKB.");
+        log::info!("Try to deploy a contract on CKB");
 
         if self.contract_owner.network() != self.ckb.network {
-            let msg = "The input addresses and the selected network are not matched.";
+            let msg = "The input addresses and the selected network are not matched";
             return Err(Error::Cli(msg.to_owned()));
         }
 
@@ -74,7 +74,7 @@ impl Args {
             Error::other(msg)
         })?;
         log::info!(
-            "The contract requires {} CKBytes for its data.",
+            "The contract requires {} CKBytes for its data",
             HumanCapacity::from(contract_data_capacity.as_u64())
         );
 
@@ -101,13 +101,13 @@ impl Args {
                 let address = CkbAddress::new(self.ckb.network, payload, true);
                 (address, sk)
             })?;
-        log::info!("The contract deployer is {deployer}.");
+        log::info!("The contract deployer is {deployer}");
 
         let iterator = InputIterator::new_with_address(&[deployer], &network_info);
         let mut builder = SimpleTransactionBuilder::new(configuration, iterator);
         builder.add_output_and_data(output, self.contract_data.pack());
         let data_hash = packed::CellOutput::calc_data_hash(&self.contract_data);
-        log::info!("The contract data hash is {data_hash:#x}.");
+        log::info!("The contract data hash is {data_hash:#x}");
 
         let mut tx_with_groups = builder.build(&Default::default())?;
 

@@ -29,7 +29,9 @@ use clap::Parser;
 use secp256k1::SecretKey;
 
 use crate::{
-    components::{ApiServiceConfig, SpvClientCell, SpvInfoCell, SpvService, Storage},
+    components::{
+        ApiServiceConfig, SpvOperation, SpvReorgInput, SpvService, SpvUpdateInput, Storage,
+    },
     prelude::*,
     result::{Error, Result},
 };
@@ -60,11 +62,6 @@ pub struct Args {
     #[arg(long, default_value = "30")]
     pub(crate) interval: u64,
 
-    /// Take a break after download some bitcoin headers,
-    /// to avoid some API limits.
-    #[arg(long, default_value = "10")]
-    pub(crate) bitcoin_headers_download_limit: u32,
-
     /// Don't update all headers in one CKB transaction,
     /// to avoid size limit or cycles limit.
     #[arg(long, default_value = "10")]
@@ -77,7 +74,7 @@ pub struct Args {
 
 impl Args {
     pub fn execute(&self) -> Result<()> {
-        log::info!("Starting the Bitcoin SPV service.");
+        log::info!("Starting the Bitcoin SPV service");
 
         let storage = Storage::new(&self.data_dir)?;
         if !storage.is_initialized()? {
@@ -98,25 +95,11 @@ impl Args {
 
         let _api_service = ApiServiceConfig::new(self.listen_address).start(spv_service.clone());
 
-        let (mut stg_tip_height, _) = storage.tip_state()?;
-        log::info!("Tip height in local storage is {stg_tip_height}");
-
         let mut prev_tx_hash: Option<H256> = None;
 
         loop {
-            let btc_tip_height = btc_cli.get_tip_height()?;
-            log::info!("Tip height from Bitcoin endpoint is {btc_tip_height}");
-
-            let required_download = stg_tip_height < btc_tip_height;
-            if required_download {
-                let end_height_limit = stg_tip_height + self.bitcoin_headers_download_limit;
-                let end_height = if end_height_limit < btc_tip_height {
-                    end_height_limit
-                } else {
-                    btc_tip_height
-                };
-                let headers = btc_cli.get_headers(stg_tip_height + 1, end_height)?;
-                (stg_tip_height, _) = storage.append_headers(headers)?;
+            if !spv_service.sync_storage()? {
+                continue;
             }
 
             if let Some(ref tx_hash) = prev_tx_hash {
@@ -136,33 +119,49 @@ impl Args {
                 }
             }
 
-            let (spv_info, spv_client_curr, spv_client_next) =
-                spv_service.find_spv_cells_for_update()?;
-            log::info!("Tip SPV client is {}", spv_client_curr.client.id);
-            let spv_tip_height = spv_client_curr.client.headers_mmr_root.max_height;
-            log::info!("Tip height in Bitcoin SPV instance is {spv_tip_height}");
+            let (stg_tip_height, stg_tip_header) = spv_service.storage.tip_state()?;
+            let stg_tip_hash = stg_tip_header.block_hash();
+            log::info!("[storage] header#{stg_tip_height:07}, {stg_tip_hash:#x}; tip");
 
-            match stg_tip_height.cmp(&spv_tip_height) {
-                Ordering::Less | Ordering::Equal => {
-                    self.take_a_break();
-                    continue;
+            match spv_service.select_operation()? {
+                SpvOperation::Update(input) => {
+                    let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
+
+                    match stg_tip_height.cmp(&spv_tip_height) {
+                        Ordering::Less | Ordering::Equal => {
+                            log::info!("No updates, sleep for a while");
+                            self.take_a_break();
+                            continue;
+                        }
+                        Ordering::Greater => {}
+                    }
+
+                    log::info!("Try to update SPV instance");
+
+                    let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
+                        spv_tip_height,
+                        self.spv_headers_update_limit,
+                    )?;
+
+                    let tx_hash =
+                        self.update_spv_cells(&spv_service, input, spv_client, spv_update)?;
+
+                    prev_tx_hash = Some(tx_hash);
                 }
-                Ordering::Greater => {}
+                SpvOperation::Reorg(input) => {
+                    log::info!("Try to reorg SPV instance");
+
+                    let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
+
+                    let (spv_client, spv_update) =
+                        storage.generate_spv_client_and_spv_update(spv_tip_height, u32::MAX)?;
+
+                    let tx_hash =
+                        self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
+
+                    prev_tx_hash = Some(tx_hash);
+                }
             }
-
-            let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
-                spv_tip_height,
-                self.spv_headers_update_limit,
-            )?;
-
-            let tx_hash = self.update_spv_cells(
-                &spv_service,
-                (spv_info, spv_client_curr, spv_client_next),
-                spv_client,
-                spv_update,
-            )?;
-
-            prev_tx_hash = Some(tx_hash);
         }
 
         // TODO Handle Ctrl-C and clean resources before exit.
@@ -171,12 +170,10 @@ impl Args {
     pub(crate) fn update_spv_cells(
         &self,
         spv: &SpvService,
-        cells: (SpvInfoCell, SpvClientCell, SpvClientCell),
+        update_input: SpvUpdateInput,
         mut spv_client: SpvClient,
         spv_update: packed::SpvUpdate,
     ) -> Result<H256> {
-        let (spv_info_cell, spv_client_curr_cell, spv_client_next_cell) = cells;
-
         let network_info =
             NetworkInfo::new(self.ckb.network, self.ckb.ckb_endpoint.as_str().to_owned());
         let configuration = {
@@ -192,17 +189,17 @@ impl Args {
                 let address = CkbAddress::new(self.ckb.network, payload, true);
                 (address, sk)
             })?;
-        log::debug!("The SPV cells will be updated by {deployer}.");
+        log::debug!("The SPV cells will be updated by {deployer}");
 
         let iterator = InputIterator::new_with_address(&[deployer.clone()], &network_info);
         let mut tx_builder = TransactionBuilder::default();
 
         let spv_inputs = {
             let spv_info_input = CellInput::new_builder()
-                .previous_output(spv_info_cell.cell.out_point.clone())
+                .previous_output(update_input.info.cell.out_point.clone())
                 .build();
             let spv_client_input = CellInput::new_builder()
-                .previous_output(spv_client_next_cell.cell.out_point.clone())
+                .previous_output(update_input.next.cell.out_point.clone())
                 .build();
             vec![spv_info_input, spv_client_input]
         };
@@ -213,18 +210,18 @@ impl Args {
         tx_builder.cell_dep(spv_contract_cell_dep);
         tx_builder.cell_dep(lock_contract_cell_dep);
         let spv_client_curr_cell_dep = CellDep::new_builder()
-            .out_point(spv_client_curr_cell.cell.out_point)
+            .out_point(update_input.curr.cell.out_point)
             .dep_type(DepType::Code.into())
             .build();
         tx_builder.cell_dep(spv_client_curr_cell_dep);
 
         let spv_outputs: Vec<CellOutput> = vec![
-            spv_info_cell.cell.output.clone(),
-            spv_client_next_cell.cell.output.clone(),
+            update_input.info.cell.output.clone(),
+            update_input.next.cell.output.clone(),
         ];
         let spv_outputs_data = {
-            spv_client.id = spv_client_next_cell.client.id;
-            let mut spv_info = spv_info_cell.info;
+            spv_client.id = update_input.next.client.id;
+            let mut spv_info = update_input.info.info;
             spv_info.tip_client_id = spv_client.id;
             let packed_spv_info: packed::SpvInfo = spv_info.pack();
             let packed_spv_client: packed::SpvClient = spv_client.pack();
@@ -263,11 +260,11 @@ impl Args {
         change_builder.init(&mut tx_builder);
         {
             let spv_info_input = TransactionInput {
-                live_cell: spv_info_cell.cell.clone(),
+                live_cell: update_input.info.cell.clone(),
                 since: 0,
             };
             let spv_client_input = TransactionInput {
-                live_cell: spv_client_next_cell.cell.clone(),
+                live_cell: update_input.next.cell.clone(),
                 since: 0,
             };
             let _ = change_builder.check_balance(spv_info_input, &mut tx_builder);
@@ -279,7 +276,7 @@ impl Args {
             let mut check_result = None;
             for (mut input_index, input) in iterator.enumerate() {
                 input_index += 2; // The first 2 inputs are SPV cells.
-                log::debug!("Try to find the {input_index}-th live cell for {deployer}.");
+                log::debug!("Try to find the {input_index}-th live cell for {deployer}");
                 let input = input.map_err(|err| {
                     let msg = format!(
                         "failed to find {input_index}-th live cell for {deployer} since {err}"
@@ -324,7 +321,192 @@ impl Args {
             check_result
         }
         .ok_or_else(|| {
-            let msg = format!("{deployer}'s live cells are not enough.");
+            let msg = format!("{deployer}'s live cells are not enough");
+            Error::other(msg)
+        })?;
+
+        TransactionSigner::new(&network_info).sign_transaction(
+            &mut tx_with_groups,
+            &SignContexts::new_sighash(vec![deployer_key]),
+        )?;
+
+        let tx_json = TransactionView::from(tx_with_groups.get_tx_view().clone());
+        let tx_hash = self
+            .ckb
+            .client()
+            .send_transaction_ext(tx_json, self.dry_run)?;
+
+        Ok(tx_hash)
+    }
+
+    pub(crate) fn reorg_spv_cells(
+        &self,
+        spv: &SpvService,
+        reorg_input: SpvReorgInput,
+        mut spv_client: SpvClient,
+        spv_update: packed::SpvUpdate,
+    ) -> Result<H256> {
+        let network_info =
+            NetworkInfo::new(self.ckb.network, self.ckb.ckb_endpoint.as_str().to_owned());
+        let configuration = {
+            let mut tmp = TransactionBuilderConfiguration::new_with_network(network_info.clone())?;
+            tmp.fee_rate = self.ckb.fee_rate;
+            tmp
+        };
+
+        let (deployer, deployer_key) = SecretKey::from_slice(&self.common.private_key.as_ref()[..])
+            .map(|sk| {
+                let pk = sk.public_key(&SECP256K1);
+                let payload = CkbAddressPayload::from_pubkey(&pk);
+                let address = CkbAddress::new(self.ckb.network, payload, true);
+                (address, sk)
+            })?;
+        log::debug!("The SPV cells will be updated by {deployer}");
+
+        let iterator = InputIterator::new_with_address(&[deployer.clone()], &network_info);
+        let mut tx_builder = TransactionBuilder::default();
+
+        let spv_inputs = {
+            let spv_info_input = CellInput::new_builder()
+                .previous_output(reorg_input.info.cell.out_point.clone())
+                .build();
+            let mut inputs = vec![spv_info_input];
+            for client in &reorg_input.stale {
+                let spv_client_input = CellInput::new_builder()
+                    .previous_output(client.cell.out_point.clone())
+                    .build();
+                inputs.push(spv_client_input);
+            }
+            inputs
+        };
+        tx_builder.inputs(spv_inputs);
+
+        let spv_contract_cell_dep = spv.storage.spv_contract_cell_dep()?;
+        let lock_contract_cell_dep = spv.storage.lock_contract_cell_dep()?;
+        tx_builder.cell_dep(spv_contract_cell_dep);
+        tx_builder.cell_dep(lock_contract_cell_dep);
+        let spv_client_curr_cell_dep = CellDep::new_builder()
+            .out_point(reorg_input.curr.cell.out_point)
+            .dep_type(DepType::Code.into())
+            .build();
+        tx_builder.cell_dep(spv_client_curr_cell_dep);
+
+        let spv_outputs = {
+            let mut outputs = vec![reorg_input.info.cell.output.clone()];
+            for client in &reorg_input.stale {
+                outputs.push(client.cell.output.clone());
+            }
+            outputs
+        };
+        let spv_outputs_data = {
+            let mut spv_info = reorg_input.info.info.clone();
+            spv_info.tip_client_id = reorg_input.info.next_tip_client_id();
+            let packed_spv_info: packed::SpvInfo = spv_info.pack();
+            let mut outputs_data = vec![packed_spv_info.as_bytes()];
+            for client in &reorg_input.stale {
+                spv_client.id = client.client.id;
+                let packed_spv_client: packed::SpvClient = spv_client.pack();
+                outputs_data.push(packed_spv_client.as_bytes());
+            }
+            outputs_data
+        };
+        tx_builder.outputs(spv_outputs);
+        tx_builder.outputs_data(spv_outputs_data.iter().map(Pack::pack));
+
+        #[allow(clippy::mutable_key_type)]
+        let mut lock_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
+        #[allow(clippy::mutable_key_type)]
+        let mut type_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
+
+        for (output_idx, output) in tx_builder.get_outputs().clone().iter().enumerate() {
+            if let Some(type_script) = &output.type_().to_opt() {
+                type_groups
+                    .entry(type_script.calc_script_hash())
+                    .or_insert_with(|| ScriptGroup::from_type_script(type_script))
+                    .output_indices
+                    .push(output_idx);
+            }
+        }
+
+        let witness = {
+            let type_args = BytesOpt::new_builder()
+                .set(Some(Pack::pack(spv_update.as_slice())))
+                .build();
+            let witness_args = WitnessArgs::new_builder().output_type(type_args).build();
+            Pack::pack(&witness_args.as_bytes())
+        };
+        tx_builder.witness(witness);
+        tx_builder.witnesses(vec![PackedBytes::default(); reorg_input.stale.len()]);
+
+        let mut change_builder =
+            DefaultChangeBuilder::new(&configuration, (&deployer).into(), Vec::new());
+        change_builder.init(&mut tx_builder);
+        {
+            let spv_info_input = TransactionInput {
+                live_cell: reorg_input.info.cell.clone(),
+                since: 0,
+            };
+            let _ = change_builder.check_balance(spv_info_input, &mut tx_builder);
+            for client in &reorg_input.stale {
+                let spv_client_input = TransactionInput {
+                    live_cell: client.cell.clone(),
+                    since: 0,
+                };
+                let _ = change_builder.check_balance(spv_client_input, &mut tx_builder);
+            }
+        };
+        let contexts = HandlerContexts::default();
+
+        let mut tx_with_groups = {
+            let mut check_result = None;
+            for (mut input_index, input) in iterator.enumerate() {
+                input_index += 1 + reorg_input.stale.len(); // info + stale clients
+                log::debug!("Try to find the {input_index}-th live cell for {deployer}");
+                let input = input.map_err(|err| {
+                    let msg = format!(
+                        "failed to find {input_index}-th live cell for {deployer} since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+                tx_builder.input(input.cell_input());
+                tx_builder.witness(PackedBytes::default());
+
+                let previous_output = input.previous_output();
+                let lock_script = previous_output.lock();
+                lock_groups
+                    .entry(lock_script.calc_script_hash())
+                    .or_insert_with(|| ScriptGroup::from_lock_script(&lock_script))
+                    .input_indices
+                    .push(input_index);
+
+                if change_builder.check_balance(input, &mut tx_builder) {
+                    let mut script_groups: Vec<ScriptGroup> = lock_groups
+                        .into_values()
+                        .chain(type_groups.into_values())
+                        .collect();
+                    for script_group in script_groups.iter_mut() {
+                        for handler in configuration.get_script_handlers() {
+                            for context in &contexts.contexts {
+                                if handler.build_transaction(
+                                    &mut tx_builder,
+                                    script_group,
+                                    context.as_ref(),
+                                )? {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    let tx_view = change_builder.finalize(tx_builder);
+
+                    check_result = Some(TransactionWithScriptGroups::new(tx_view, script_groups));
+                    break;
+                }
+            }
+            check_result
+        }
+        .ok_or_else(|| {
+            let msg = format!("{deployer}'s live cells are not enough");
             Error::other(msg)
         })?;
 

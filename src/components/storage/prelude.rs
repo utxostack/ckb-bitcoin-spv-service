@@ -81,7 +81,7 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
             return Err(Error::data("don't initialize a non-empty storage"));
         }
         let block_hash: Hash = header.block_hash().into();
-        let digest = HeaderDigest::new_leaf(height, block_hash).pack();
+        let digest = HeaderDigest::new_leaf(height, &header).pack();
 
         let mut mmr = ClientRootMMR::new(0, self.clone());
 
@@ -142,7 +142,7 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
             let index = tip_height - base_height;
             let position = mmr::lib::leaf_index_to_pos(u64::from(index));
 
-            let digest = HeaderDigest::new_leaf(tip_height, tip_hash).pack();
+            let digest = HeaderDigest::new_leaf(tip_height, header).pack();
 
             self.put_bitcoin_header(tip_height, &tip_header)?;
             positions.push(position);
@@ -230,6 +230,11 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
         Ok((spv_client, spv_update))
     }
 
+    fn generate_headers_root(&self, tip_height: u32) -> Result<packed::HeaderDigest> {
+        let (_, mmr) = self.chain_root_mmr(tip_height)?;
+        let mmr_root = mmr.get_root()?;
+        Ok(mmr_root)
+    }
     fn generate_headers_proof(&self, tip_height: u32, heights: Vec<u32>) -> Result<MmrProof> {
         let (base_height, mmr) = self.chain_root_mmr(tip_height)?;
         let positions = heights
@@ -257,6 +262,15 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
             return Err(Error::data("don't rollback on an empty storage"));
         }
         Ok(())
+    }
+
+    fn base_state(&self) -> Result<(u32, Header)> {
+        self.get_base_bitcoin_height()
+            .and_then(|opt| opt.ok_or_else(|| Error::not_found("base bitcoin height")))
+            .and_then(|height| {
+                self.get_bitcoin_header(height)
+                    .map(|header| (height, header))
+            })
     }
 
     fn tip_state(&self) -> Result<(u32, Header)> {

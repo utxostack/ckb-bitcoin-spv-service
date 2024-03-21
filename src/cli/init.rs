@@ -59,6 +59,8 @@ pub struct Args {
     /// The start height of the new Bitcoin SPV instance.
     ///
     /// This height should be multiples of number 2016.
+    ///
+    // TODO Input hash rather than height.
     #[arg(long, required = true)]
     pub(crate) bitcoin_start_height: u32,
 
@@ -103,7 +105,7 @@ pub struct Args {
 impl Args {
     // TODO Split this method into several smaller methods.
     pub fn execute(&self) -> Result<()> {
-        log::info!("Try to initialize a Bitcoin SPV instance on CKB.");
+        log::info!("Try to initialize a Bitcoin SPV instance on CKB");
 
         self.check_inputs()?;
         log::info!("The bitcoin start height is {}", self.bitcoin_start_height);
@@ -132,7 +134,7 @@ impl Args {
                 let address = CkbAddress::new(self.ckb.network, payload, true);
                 (address, sk)
             })?;
-        log::info!("The contract deployer is {deployer}.");
+        log::info!("The contract deployer is {deployer}");
 
         let spv_outputs_data = {
             let spv_info = packed::SpvInfo::new_builder().build();
@@ -159,7 +161,7 @@ impl Args {
             .build();
         tx_builder.cell_dep(spv_contract_cell_dep.clone());
 
-        log::debug!("Try to find the first live cell for {deployer}.");
+        log::debug!("Try to find the first live cell for {deployer}");
         let input0 = iterator
             .next()
             .transpose()
@@ -168,7 +170,7 @@ impl Args {
                 Error::other(msg)
             })?
             .ok_or_else(|| {
-                let msg = format!("{deployer} has no live cell.");
+                let msg = format!("{deployer} has no live cell");
                 Error::other(msg)
             })?;
 
@@ -311,7 +313,7 @@ impl Args {
             let mut check_result = None;
             for (mut input_index, input) in iterator.enumerate() {
                 input_index += 1; // The first input has been handled.
-                log::debug!("Try to find the {input_index}-th live cell for {deployer}.");
+                log::debug!("Try to find the {input_index}-th live cell for {deployer}");
                 let input = input.map_err(|err| {
                     let msg = format!(
                         "failed to find {input_index}-th live cell for {deployer} since {err}"
@@ -356,7 +358,7 @@ impl Args {
             check_result
         }
         .ok_or_else(|| {
-            let msg = format!("{deployer}'s live cells are not enough.");
+            let msg = format!("{deployer}'s live cells are not enough");
             Error::other(msg)
         })?;
 
@@ -375,7 +377,7 @@ impl Args {
 
     fn check_inputs(&self) -> Result<()> {
         if self.spv_owner.network() != self.ckb.network {
-            let msg = "The input addresses and the selected network are not matched.";
+            let msg = "The input addresses and the selected network are not matched";
             return Err(Error::cli(msg));
         }
 
@@ -401,7 +403,7 @@ impl Args {
 
     fn check_remotes(&self) -> Result<()> {
         if self.spv_owner.network() != self.ckb.network {
-            let msg = "The input addresses and the selected network are not matched.";
+            let msg = "The input addresses and the selected network are not matched";
             return Err(Error::cli(msg));
         }
 
