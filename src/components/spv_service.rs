@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use ckb_bitcoin_spv_verifier::types::{
-    core::{SpvClient, SpvInfo},
+    core::{Hash, SpvClient, SpvInfo},
     packed,
-    prelude::Unpack as VUnpack,
+    prelude::{Pack as VPack, Unpack as VUnpack},
 };
 use ckb_sdk::{
     rpc::{
@@ -42,6 +42,28 @@ pub struct SpvClientCell {
     pub(crate) cell: LiveCell,
 }
 
+pub struct SpvInstance {
+    pub(crate) info: SpvInfoCell,
+    pub(crate) clients: HashMap<u8, SpvClientCell>,
+}
+
+pub struct SpvUpdateInput {
+    pub(crate) info: SpvInfoCell,
+    pub(crate) curr: SpvClientCell,
+    pub(crate) next: SpvClientCell,
+}
+
+pub struct SpvReorgInput {
+    pub(crate) info: SpvInfoCell,
+    pub(crate) curr: SpvClientCell,
+    pub(crate) stale: Vec<SpvClientCell>,
+}
+
+pub enum SpvOperation {
+    Update(SpvUpdateInput),
+    Reorg(SpvReorgInput),
+}
+
 impl SpvInfoCell {
     pub(crate) fn prev_tip_client_id(&self) -> u8 {
         let current = self.info.tip_client_id;
@@ -63,54 +85,112 @@ impl SpvInfoCell {
 }
 
 impl SpvService {
-    pub(crate) fn find_spv_cells_for_update(
-        &self,
-    ) -> Result<(SpvInfoCell, SpvClientCell, SpvClientCell)> {
-        let (spv_info, spv_clients) = self.find_spv_cells()?;
-        let spv_client_curr = spv_clients
-            .get(&spv_info.info.tip_client_id)
-            .ok_or_else(|| {
+    pub(crate) fn find_best_spv_client(&self, height: u32) -> Result<SpvClientCell> {
+        let SpvInstance { mut info, clients } = self.find_spv_cells()?;
+        for _ in 0..clients.len() {
+            let cell = clients.get(&info.info.tip_client_id).ok_or_else(|| {
                 let msg = format!(
-                    "the current tip SPV client (id={}) is not found",
-                    spv_info.info.tip_client_id
+                    "the SPV client (id={}) is not found",
+                    info.info.tip_client_id
                 );
                 Error::other(msg)
-            })?
-            .to_owned();
-        let next_tip_client_id = spv_info.next_tip_client_id();
-        let spv_client_next = spv_clients
-            .get(&next_tip_client_id)
-            .ok_or_else(|| {
-                let msg =
-                    format!("the next tip SPV client (id={next_tip_client_id}) is not found",);
-                Error::other(msg)
-            })?
-            .to_owned();
-        Ok((spv_info, spv_client_curr, spv_client_next))
-    }
-
-    pub(crate) fn find_best_spv_client(&self, height: u32) -> Result<SpvClientCell> {
-        let (mut spv_info, spv_clients) = self.find_spv_cells()?;
-        for _ in 0..spv_clients.len() {
-            let spv_client = spv_clients
-                .get(&spv_info.info.tip_client_id)
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "the current tip SPV client (id={}) is not found",
-                        spv_info.info.tip_client_id
-                    );
-                    Error::other(msg)
-                })?;
-            if spv_client.client.headers_mmr_root.max_height <= height {
-                return Ok(spv_client.to_owned());
+            })?;
+            if cell.client.headers_mmr_root.max_height <= height {
+                return Ok(cell.to_owned());
             }
-            spv_info.info.tip_client_id = spv_info.prev_tip_client_id();
+            info.info.tip_client_id = info.prev_tip_client_id();
         }
         let msg = format!("all SPV clients have better heights than server has (height: {height})");
         Err(Error::other(msg))
     }
 
-    pub(crate) fn find_spv_cells(&self) -> Result<(SpvInfoCell, HashMap<u8, SpvClientCell>)> {
+    pub(crate) fn select_operation(&self) -> Result<SpvOperation> {
+        let ins = self.find_spv_cells()?;
+        let spv_client_curr = ins
+            .clients
+            .get(&ins.info.info.tip_client_id)
+            .ok_or_else(|| {
+                let msg = format!(
+                    "the current tip SPV client (id={}) is not found",
+                    ins.info.info.tip_client_id
+                );
+                Error::other(msg)
+            })?
+            .to_owned();
+        log::trace!("[onchain] tip SPV client {}", spv_client_curr.client);
+
+        let spv_header_root_curr = &spv_client_curr.client.headers_mmr_root;
+        let spv_height_curr = spv_header_root_curr.max_height;
+        let packed_stg_header_root_curr = self.storage.generate_headers_root(spv_height_curr)?;
+        let packed_spv_header_root_curr = spv_header_root_curr.pack();
+
+        if packed_stg_header_root_curr.as_slice() != packed_spv_header_root_curr.as_slice() {
+            log::warn!("[onchain] header#{spv_height_curr}; mmr-root {spv_header_root_curr}");
+            let stg_header_root_curr = packed_stg_header_root_curr.unpack();
+            log::warn!("[storage] header#{spv_height_curr}; mmr-root {stg_header_root_curr}");
+            let input = self.prepare_reorg_input(ins)?;
+            return Ok(SpvOperation::Reorg(input));
+        }
+
+        let next_tip_client_id = ins.info.next_tip_client_id();
+        let spv_client_next = ins
+            .clients
+            .get(&next_tip_client_id)
+            .ok_or_else(|| {
+                let msg = format!("the next tip SPV client (id={next_tip_client_id}) is not found");
+                Error::other(msg)
+            })?
+            .to_owned();
+        log::trace!(
+            "[onchain] old SPV client {} (will be next)",
+            spv_client_next.client
+        );
+        let input = SpvUpdateInput {
+            info: ins.info,
+            curr: spv_client_curr,
+            next: spv_client_next,
+        };
+        Ok(SpvOperation::Update(input))
+    }
+
+    pub(crate) fn prepare_reorg_input(&self, ins: SpvInstance) -> Result<SpvReorgInput> {
+        let SpvInstance { mut info, clients } = ins;
+        let mut stale = Vec::new();
+        for _ in 0..clients.len() {
+            let cell = clients.get(&info.info.tip_client_id).ok_or_else(|| {
+                let msg = format!(
+                    "the SPV client (id={}) is not found",
+                    info.info.tip_client_id
+                );
+                Error::other(msg)
+            })?;
+
+            let spv_header_root = &cell.client.headers_mmr_root;
+            let spv_height = spv_header_root.max_height;
+            let packed_stg_header_root = self.storage.generate_headers_root(spv_height)?;
+            let packed_spv_header_root = spv_header_root.pack();
+
+            if packed_stg_header_root.as_slice() == packed_spv_header_root.as_slice() {
+                let input = SpvReorgInput {
+                    info,
+                    curr: cell.clone(),
+                    stale,
+                };
+                return Ok(input);
+            }
+
+            log::trace!("[onchain] header#{spv_height}; mmr-root {spv_header_root}");
+            let stg_header_root = packed_stg_header_root.unpack();
+            log::trace!("[storage] header#{spv_height}; mmr-root {stg_header_root}");
+
+            stale.push(cell.clone());
+            info.info.tip_client_id = info.prev_tip_client_id();
+        }
+        let msg = "failed to reorg since no common parent between SPV instance and storage";
+        Err(Error::other(msg))
+    }
+
+    pub(crate) fn find_spv_cells(&self) -> Result<SpvInstance> {
         let cells = self.find_raw_spv_cells()?;
         parse_raw_spv_cells(cells)
     }
@@ -146,9 +226,83 @@ impl SpvService {
                 }
             })
     }
+
+    pub(crate) fn sync_storage(&self) -> Result<bool> {
+        let spv = &self;
+        let (stg_tip_height, stg_tip_header) = spv.storage.tip_state()?;
+        let stg_tip_hash = stg_tip_header.block_hash();
+        log::info!("[storage] header#{stg_tip_height:07}, {stg_tip_hash:#x}; tip");
+
+        let (btc_tip_height, btc_tip_header) = spv.btc_cli.get_tip_state()?;
+        log::info!(
+            "[bitcoin] header#{btc_tip_height:07}, {:#x}; tip; prev {:#x}",
+            btc_tip_header.block_hash(),
+            btc_tip_header.prev_blockhash
+        );
+
+        if stg_tip_height >= btc_tip_height {
+            return Ok(true);
+        }
+
+        let btc_header = spv.btc_cli.get_block_header_by_height(stg_tip_height)?;
+        let btc_hash = btc_header.block_hash();
+        if stg_tip_hash == btc_hash {
+            let headers = if let Some(headers) =
+                spv.btc_cli
+                    .get_headers(stg_tip_height + 1, btc_tip_height, stg_tip_hash)?
+            {
+                headers
+            } else {
+                return Ok(false);
+            };
+            let _ = spv.storage.append_headers(headers)?;
+            return Ok(true);
+        }
+
+        log::info!("Try to find the height when fork happened.");
+        let (stg_base_height, _) = spv.storage.base_state()?;
+        let mut fork_point = None;
+
+        for height in (stg_base_height..stg_tip_height).rev() {
+            let stg_hash = spv.storage.bitcoin_header_hash(height)?;
+            log::debug!("[storage] header#{height:07}, {stg_hash:#x}");
+            let btc_header = spv.btc_cli.get_block_header_by_height(height)?;
+            let btc_hash: Hash = btc_header.block_hash().into();
+            log::debug!("[bitcoin] header#{height:07}, {btc_hash:#x}");
+
+            if stg_hash == btc_hash {
+                log::info!("Fork happened at height {height}.");
+                fork_point = Some((height, btc_hash));
+            }
+        }
+
+        if fork_point.is_none() {
+            let msg = format!(
+                "reorg failed since the fork point is ahead than \
+                local start height {stg_base_height}"
+            );
+            return Err(Error::other(msg));
+        }
+        let (fork_height, fork_hash) = fork_point.unwrap();
+
+        log::warn!("The chain in storage rollback to header#{fork_height:07}, {fork_hash:#x}");
+        spv.storage.rollback_to(Some(fork_height))?;
+
+        let headers = if let Some(headers) =
+            spv.btc_cli
+                .get_headers(fork_height + 1, btc_tip_height, fork_hash.into())?
+        {
+            headers
+        } else {
+            return Ok(false);
+        };
+        let _ = spv.storage.append_headers(headers)?;
+
+        Ok(true)
+    }
 }
 
-fn parse_raw_spv_cells(cells: Vec<LiveCell>) -> Result<(SpvInfoCell, HashMap<u8, SpvClientCell>)> {
+fn parse_raw_spv_cells(cells: Vec<LiveCell>) -> Result<SpvInstance> {
     let mut spv_info_opt = None;
     let mut spv_clients = HashMap::new();
     let clients_count = (cells.len() - 1) as u8; // Checked when fetch SPV cells.
@@ -177,7 +331,11 @@ fn parse_raw_spv_cells(cells: Vec<LiveCell>) -> Result<(SpvInfoCell, HashMap<u8,
         }
     }
     if let Some(spv_info) = spv_info_opt {
-        Ok((spv_info, spv_clients))
+        let instance = SpvInstance {
+            info: spv_info,
+            clients: spv_clients,
+        };
+        Ok(instance)
     } else {
         let msg = "the SPV info cell is missing";
         Err(Error::other(msg))

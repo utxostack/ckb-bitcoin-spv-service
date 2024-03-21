@@ -150,6 +150,13 @@ impl BitcoinClient {
             .and_then(|hash| self.get_block_height(hash))
     }
 
+    pub fn get_tip_state(&self) -> BtcRpcResult<(u32, Header)> {
+        self.get_best_block_hash().and_then(|hash| {
+            self.get_block_height(hash)
+                .and_then(|height| self.get_block_header(hash).map(|header| (height, header)))
+        })
+    }
+
     pub fn get_block_hash(&self, height: u32) -> BtcRpcResult<BlockHash> {
         let params = serialize_parameters!(height);
         self.post("getblockhash", params)
@@ -248,13 +255,32 @@ impl BitcoinClient {
         Ok(header)
     }
 
-    pub fn get_headers(&self, start: u32, end: u32) -> Result<Vec<Header>> {
-        log::trace!("Download headers from {start} to {end}");
+    pub fn get_headers(
+        &self,
+        start: u32,
+        end: u32,
+        mut expected_prev_hash: BlockHash,
+    ) -> Result<Option<Vec<Header>>> {
+        log::info!("Download headers from {start} to {end} base on {expected_prev_hash:#x}");
         let mut headers = Vec::new();
         for height in start..=end {
             let header = self.get_block_header_by_height(height)?;
+            let block_hash = header.block_hash();
+            log::trace!(
+                "[download] header#{height:07}, {block_hash:#x}; tip; prev {}",
+                header.prev_blockhash
+            );
+            if header.prev_blockhash != expected_prev_hash {
+                log::warn!(
+                    "[download] reorg at {height} when download headers from {start} to {end}\
+                    expect {expected_prev_hash:#x} but got {:#x}",
+                    header.prev_blockhash
+                );
+                return Ok(None);
+            }
+            expected_prev_hash = block_hash;
             headers.push(header);
         }
-        Ok(headers)
+        Ok(Some(headers))
     }
 }

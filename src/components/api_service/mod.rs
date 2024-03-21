@@ -21,6 +21,10 @@ use crate::{
     result::{Error, Result},
 };
 
+mod error;
+
+pub use error::ApiErrorCode;
+
 pub struct ApiServiceConfig {
     listen_address: SocketAddr,
 }
@@ -88,9 +92,9 @@ impl SpvRpc for SpvRpcImpl {
             tokio::task::block_in_place(|| -> RpcResult<(u32, Hash, Vec<u8>)> {
                 let (merkle_block, raw_tx_out_proof) =
                     spv.btc_cli.get_tx_out_proof(txid).map_err(|err| {
-                        let message = format!(
-                            "failed to get tx out proof for {txid:#x} from remote since {err}"
-                        );
+                        let message =
+                            format!("failed to get tx out proof for {txid:#x} from remote");
+                        log::error!("{message} since {err}");
                         RpcError {
                             code: RpcErrorCode::InternalError,
                             message,
@@ -100,7 +104,9 @@ impl SpvRpc for SpvRpcImpl {
                 let block_hash = merkle_block.header.block_hash();
                 log::trace!(">>> the input tx in header {block_hash:#x}");
                 let block_height = spv.btc_cli.get_block_height(block_hash).map_err(|err| {
-                    let message = format!("failed to get block height from remote since {err}");
+                    let message =
+                        format!("failed to get block height for {block_hash:#x} from remote");
+                    log::error!("{message} since {err}");
                     RpcError {
                         code: RpcErrorCode::InternalError,
                         message,
@@ -112,8 +118,8 @@ impl SpvRpc for SpvRpcImpl {
             })?;
 
         let (stg_tip_height, _) = spv.storage.tip_state().map_err(|err| {
-            let message =
-                format!("failed to read tip bitcoin height from local storage since {err}");
+            let message = "failed to read tip bitcoin height from local storage".to_owned();
+            log::error!("{message} since {err}");
             RpcError {
                 code: RpcErrorCode::InternalError,
                 message,
@@ -124,55 +130,42 @@ impl SpvRpc for SpvRpcImpl {
 
         // TODO Define server errors with enum.
         if stg_tip_height < target_height {
-            let message = format!(
+            let desc = format!(
                 "target transaction is in header#{target_height}, \
-                but the tip header in server is header#{stg_tip_height}"
+                but the tip header in local storage is header#{stg_tip_height}"
             );
-            return Err(RpcError {
-                code: RpcErrorCode::ServerError(-1),
-                message,
-                data: None,
-            });
+            return Err(ApiErrorCode::StorageTxTooNew.with_desc(desc));
         }
         if stg_tip_height < target_height + confirmations {
-            let message = format!(
+            let desc = format!(
                 "target transaction is in header#{target_height} \
                 and it requires {confirmations} confirmations, \
-                but the tip header in server is header#{stg_tip_height}"
+                but the tip header in local storage is header#{stg_tip_height}"
             );
-            return Err(RpcError {
-                code: RpcErrorCode::ServerError(-2),
-                message,
-                data: None,
-            });
+            return Err(ApiErrorCode::StorageTxUnconfirmed.with_desc(desc));
         }
         let stg_target_hash = spv
             .storage
             .bitcoin_header_hash(target_height)
             .map_err(|err| {
-                let message = format!("server doesn't have header#{target_height} since {err}");
-                RpcError {
-                    code: RpcErrorCode::ServerError(-3),
-                    message,
-                    data: None,
-                }
+                let desc = format!("local storage doesn't have header#{target_height}");
+                log::error!("{desc} since {err}");
+                ApiErrorCode::StorageHeaderMissing.with_desc(desc)
             })?;
         if target_hash != stg_target_hash {
-            let message = format!(
+            let desc = format!(
                 "target transaction is in header#{target_height}, \
                 the header hash from remote is {target_hash:#x}, \
-                its hash in server is {stg_target_hash:#x}"
+                its hash in local storage is {stg_target_hash:#x}"
             );
-            return Err(RpcError {
-                code: RpcErrorCode::ServerError(-4),
-                message,
-                data: None,
-            });
+            return Err(ApiErrorCode::StorageHeaderUnmatched.with_desc(desc));
         }
 
         let spv_client_cell = tokio::task::block_in_place(|| -> RpcResult<SpvClientCell> {
             spv.find_best_spv_client(stg_tip_height).map_err(|err| {
-                let message = format!("failed to get SPV cell from remote since {err}");
+                let message =
+                    format!("failed to get SPV cell base on height {stg_tip_height} from chain");
+                log::error!("{message} since {err}");
                 RpcError {
                     code: RpcErrorCode::InternalError,
                     message,
@@ -182,18 +175,39 @@ impl SpvRpc for SpvRpcImpl {
         })?;
         log::trace!(">>> the best SPV client is {}", spv_client_cell.client);
 
-        if spv_client_cell.client.headers_mmr_root.max_height < target_height + confirmations {
-            let message = format!(
+        let spv_header_root = &spv_client_cell.client.headers_mmr_root;
+
+        let spv_best_height = spv_header_root.max_height;
+        if spv_best_height < target_height + confirmations {
+            let desc = format!(
                 "target transaction is in header#{target_height} \
                 and it requires {confirmations} confirmations, \
-                but the best SPV header is header#{}",
-                spv_client_cell.client.headers_mmr_root.max_height
+                but the best SPV header is header#{spv_best_height}",
             );
-            return Err(RpcError {
-                code: RpcErrorCode::ServerError(-5),
-                message,
-                data: None,
-            });
+            return Err(ApiErrorCode::OnchainTxUnconfirmed.with_desc(desc));
+        }
+
+        let packed_stg_header_root =
+            spv.storage
+                .generate_headers_root(spv_best_height)
+                .map_err(|err| {
+                    let message =
+                        format!("failed to generate headers MMR root for height {spv_best_height}");
+                    log::error!("{message} since {err}");
+                    RpcError {
+                        code: RpcErrorCode::InternalError,
+                        message,
+                        data: None,
+                    }
+                })?;
+        let packed_spv_header_root = spv_header_root.pack();
+
+        if packed_stg_header_root.as_slice() != packed_spv_header_root.as_slice() {
+            log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
+            let stg_header_root = packed_stg_header_root.unpack();
+            log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
+            let desc = "the SPV instance on chain is not unknown, reorg is required";
+            return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
         }
 
         let header_proof = spv
@@ -203,7 +217,8 @@ impl SpvRpc for SpvRpcImpl {
                 vec![target_height],
             )
             .map_err(|err| {
-                let message = format!("failed to generate headers MMR proof since {err}");
+                let message = "failed to generate headers MMR proof".to_owned();
+                log::error!("{message} since {err}");
                 RpcError {
                     code: RpcErrorCode::InternalError,
                     message,
