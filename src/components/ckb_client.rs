@@ -33,7 +33,7 @@ impl CkbRpcClientExtension for CkbRpcClient {
 
         if !dry_run {
             let tx_hash = self.send_transaction(tx_json.inner, None)?;
-            log::info!("Transaction hash: {tx_hash:#x}.");
+            log::info!("Transaction hash: {tx_hash:#x}");
             println!("Send transaction: {tx_hash:#x}");
         }
 
