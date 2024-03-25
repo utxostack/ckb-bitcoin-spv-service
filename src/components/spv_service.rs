@@ -117,7 +117,7 @@ impl SpvService {
                 Error::other(msg)
             })?
             .to_owned();
-        log::trace!("[onchain] tip SPV client {}", spv_client_curr.client);
+        log::info!("[onchain] tip SPV client {}", spv_client_curr.client);
 
         let spv_header_root_curr = &spv_client_curr.client.headers_mmr_root;
         let spv_height_curr = spv_header_root_curr.max_height;
@@ -259,7 +259,7 @@ impl SpvService {
             return Ok(true);
         }
 
-        log::info!("Try to find the height when fork happened.");
+        log::info!("Try to find the height when fork happened");
         let (stg_base_height, _) = spv.storage.base_state()?;
         let mut fork_point = None;
 
@@ -271,7 +271,7 @@ impl SpvService {
             log::debug!("[bitcoin] header#{height:07}, {btc_hash:#x}");
 
             if stg_hash == btc_hash {
-                log::info!("Fork happened at height {height}.");
+                log::info!("Fork happened at height {height}");
                 fork_point = Some((height, btc_hash));
             }
         }

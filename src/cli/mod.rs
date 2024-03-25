@@ -27,8 +27,8 @@ pub struct Cli {
 pub enum Commands {
     /// Deploy a contract on CKB.
     ///
-    /// This command is used to deploy the Bitcoin SPV contract.
-    /// Also, users can deploy the contract in their own way.
+    /// This command can be used to deploy any contract and;
+    /// also, users can deploy the contract in their own way.
     Deploy(deploy::Args),
     /// Initialize a Bitcoin SPV instance on CKB.
     Init(init::Args),

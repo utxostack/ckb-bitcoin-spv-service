@@ -31,7 +31,7 @@ use ckb_types::{
     prelude::*,
     H256,
 };
-use clap::Parser;
+use clap::{Args as ClapArgs, Parser};
 use secp256k1::SecretKey;
 
 use crate::{
@@ -68,9 +68,8 @@ pub struct Args {
     #[arg(long, required = true)]
     pub(crate) spv_clients_count: u8,
 
-    /// The data hash of the Bitcoin SPV contract.
-    #[arg(long, value_parser = value_parsers::H256ValueParser)]
-    pub(crate) spv_contract_data_hash: H256,
+    #[clap(flatten)]
+    pub(crate) spv_contract_code_hash: CodeHash,
 
     /// The out point of the Bitcoin SPV contract.
     #[arg(long, value_parser = value_parsers::OutPointValueParser)]
@@ -100,6 +99,18 @@ pub struct Args {
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
     pub(crate) dry_run: bool,
+}
+
+#[derive(ClapArgs)]
+#[group(required = true, multiple = false)]
+pub struct CodeHash {
+    /// The data hash of the Bitcoin SPV contract.
+    #[arg(long, value_parser = value_parsers::H256ValueParser)]
+    pub(crate) spv_contract_data_hash: Option<H256>,
+
+    /// The type hash of the Bitcoin SPV contract.
+    #[arg(long, value_parser = value_parsers::H256ValueParser)]
+    pub(crate) spv_contract_type_hash: Option<H256>,
 }
 
 impl Args {
@@ -187,11 +198,29 @@ impl Args {
                 .clients_count(self.spv_clients_count.into())
                 .flags(flags.into())
                 .build();
-            Script::new_builder()
-                .code_hash(self.spv_contract_data_hash.pack())
-                .hash_type(ScriptHashType::Data1.into())
-                .args(Pack::pack(&args.as_bytes()))
-                .build()
+            match self.spv_contract_code_hash {
+                CodeHash {
+                    spv_contract_data_hash: Some(ref data_hash),
+                    spv_contract_type_hash: None,
+                } => Script::new_builder()
+                    .code_hash(data_hash.pack())
+                    .hash_type(ScriptHashType::Data1.into())
+                    .args(Pack::pack(&args.as_bytes()))
+                    .build(),
+                CodeHash {
+                    spv_contract_data_hash: None,
+                    spv_contract_type_hash: Some(ref type_hash),
+                } => Script::new_builder()
+                    .code_hash(type_hash.pack())
+                    .hash_type(ScriptHashType::Type.into())
+                    .args(Pack::pack(&args.as_bytes()))
+                    .build(),
+                _ => {
+                    let msg = "only one of data hash and type hash for SPV contract \
+                        should be input, and at least one should be input";
+                    return Err(Error::other(msg));
+                }
+            }
         };
 
         storage.save_cells_state(

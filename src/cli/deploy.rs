@@ -2,6 +2,7 @@
 
 use ckb_jsonrpc_types::TransactionView;
 use ckb_sdk::{
+    constants::TYPE_ID_CODE_HASH,
     transaction::{
         builder::{CkbTransactionBuilder, SimpleTransactionBuilder},
         input::InputIterator,
@@ -11,7 +12,7 @@ use ckb_sdk::{
     types::{
         Address as CkbAddress, AddressPayload as CkbAddressPayload, HumanCapacity, NetworkInfo,
     },
-    SECP256K1,
+    ScriptId, SECP256K1,
 };
 use ckb_types::{bytes::Bytes, core::Capacity, packed, prelude::*};
 use clap::Parser;
@@ -31,24 +32,16 @@ pub struct Args {
     #[clap(flatten)]
     pub(crate) ckb: super::CkbArgs,
 
-    /// A binary file, which should contain the Bitcoin SPV contract.
-    ///
-    /// The repository of the contract source code is
-    /// <https://github.com/ckb-cell/ckb-bitcoin-spv-contracts>.
-    ///
-    /// ### Warnings
-    ///
-    /// Under the development phase, the compatibility has chance to be broken
-    /// without any declaration.
-    ///
-    /// Please always use the latest versions of both the service and the contract.
-    ///
-    /// TODO Matched versions of the contracts should be list.
+    /// A binary file, which should contain a contract that users want to deploy.
     #[arg(
         long = "contract-file", value_name = "CONTRACT_FILE", required = true,
         value_parser = value_parsers::BinaryFileValueParser
     )]
     pub(crate) contract_data: Bytes,
+
+    /// Enable the type ID when deploy the contract.
+    #[arg(long)]
+    pub(crate) enable_type_id: bool,
 
     /// The contract owner's address.
     #[arg(long="contract-owner", value_parser = value_parsers::AddressValueParser)]
@@ -60,7 +53,6 @@ pub struct Args {
 }
 
 impl Args {
-    // TODO Deploy the Bitcoin SPV contract as type script.
     pub fn execute(&self) -> Result<()> {
         log::info!("Try to deploy a contract on CKB");
 
@@ -86,13 +78,19 @@ impl Args {
             tmp
         };
 
-        let output = packed::CellOutput::new_builder()
-            .lock((&self.contract_owner).into())
-            .build_exact_capacity(contract_data_capacity)
-            .map_err(|err| {
-                let msg = format!("failed to calculate the capacity for the output since {err}");
-                Error::other(msg)
-            })?;
+        let output_builder = packed::CellOutput::new_builder().lock((&self.contract_owner).into());
+
+        let output = if self.enable_type_id {
+            let type_script = ScriptId::new_type(TYPE_ID_CODE_HASH.clone()).dummy_type_id_script();
+            output_builder.type_(Some(type_script).pack())
+        } else {
+            output_builder
+        }
+        .build_exact_capacity(contract_data_capacity)
+        .map_err(|err| {
+            let msg = format!("failed to calculate the capacity for the output since {err}");
+            Error::other(msg)
+        })?;
 
         let (deployer, deployer_key) = SecretKey::from_slice(&self.common.private_key.as_ref()[..])
             .map(|sk| {
@@ -117,6 +115,28 @@ impl Args {
         )?;
 
         let tx_json = TransactionView::from(tx_with_groups.get_tx_view().clone());
+
+        if self.enable_type_id {
+            let type_script: packed::Script = tx_json
+                .inner
+                .outputs
+                .first()
+                .ok_or_else(|| {
+                    let msg = "at least one output should be existed";
+                    Error::other(msg)
+                })?
+                .type_
+                .as_ref()
+                .ok_or_else(|| {
+                    let msg = "the final output must contain a type script";
+                    Error::other(msg)
+                })?
+                .to_owned()
+                .into();
+            let type_hash = type_script.calc_script_hash();
+            log::info!("The contract type hash is {type_hash:#x}");
+        }
+
         self.ckb
             .client()
             .send_transaction_ext(tx_json, self.dry_run)?;
