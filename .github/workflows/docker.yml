@@ -3,7 +3,7 @@ name: Docker
 on:
   workflow_dispatch:
   push:
-    branches: ["develop"]
+    branches: ["develop", "master"]
     tags:
 
 jobs:
