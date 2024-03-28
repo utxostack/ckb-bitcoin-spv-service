@@ -182,7 +182,7 @@ impl Args {
             tmp
         };
 
-        let (deployer, deployer_key) = SecretKey::from_slice(&self.common.private_key.as_ref()[..])
+        let (deployer, deployer_key) = SecretKey::from_slice(&self.ckb.private_key.as_ref()[..])
             .map(|sk| {
                 let pk = sk.public_key(&SECP256K1);
                 let payload = CkbAddressPayload::from_pubkey(&pk);
@@ -354,7 +354,7 @@ impl Args {
             tmp
         };
 
-        let (deployer, deployer_key) = SecretKey::from_slice(&self.common.private_key.as_ref()[..])
+        let (deployer, deployer_key) = SecretKey::from_slice(&self.ckb.private_key.as_ref()[..])
             .map(|sk| {
                 let pk = sk.public_key(&SECP256K1);
                 let payload = CkbAddressPayload::from_pubkey(&pk);

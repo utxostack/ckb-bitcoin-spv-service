@@ -14,6 +14,7 @@ use crate::{
 mod deploy;
 mod init;
 mod serve;
+mod sync;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -30,23 +31,18 @@ pub enum Commands {
     /// This command can be used to deploy any contract and;
     /// also, users can deploy the contract in their own way.
     Deploy(deploy::Args),
-    /// Initialize a Bitcoin SPV instance on CKB.
+    /// Initialize a new Bitcoin SPV instance on CKB, and initialize local storage.
     Init(init::Args),
-    /// Run a service to sync bitcoin headers to CKB.
+    /// Run a service to update a Bitcoin SPV instance base on local storage.
     Serve(serve::Args),
+    /// Sync data to rebuild local storage base on an existed Bitcoin SPV instance.
+    Sync(sync::Args),
 }
 
 #[derive(Parser)]
 pub struct CommonArgs {
     #[command(flatten)]
     pub(crate) verbose: Verbosity<InfoLevel>,
-
-    /// A binary file, which contains a secp256k1 private key.
-    /// This private key will be used to provide all CKBytes.
-    ///
-    /// Tip: After starting the service, this file should be deleted, for safety.
-    #[arg(long = "key-file", value_name = "KEY_FILE")]
-    pub(crate) private_key: Key256Bits,
 }
 
 #[derive(Parser)]
@@ -66,6 +62,28 @@ pub struct CkbArgs {
     /// The fee rate for CKB transactions.
     #[arg(long = "ckb-fee-rate", default_value = "1000")]
     pub(crate) fee_rate: u64,
+
+    /// A binary file, which contains a secp256k1 private key.
+    /// This private key will be used to provide all CKBytes.
+    ///
+    /// Tip: After starting the service, this file should be deleted, for safety.
+    #[arg(long = "key-file", value_name = "KEY_FILE")]
+    pub(crate) private_key: Key256Bits,
+}
+
+#[derive(Parser)]
+pub struct CkbRoArgs {
+    /// CKB JSON-RPC APIs endpoint.
+    #[arg(long)]
+    pub(crate) ckb_endpoint: Url,
+
+    /// The network type of the CKB chain which connected.
+    #[arg(
+        long = "network-type",
+        value_parser = value_parsers::NetworkTypeValueParser,
+        default_value = "testnet"
+    )]
+    pub network: NetworkType,
 }
 
 #[derive(Parser)]
@@ -103,6 +121,7 @@ impl Cli {
             Commands::Deploy(args) => args.execute()?,
             Commands::Init(args) => args.execute()?,
             Commands::Serve(args) => args.execute()?,
+            Commands::Sync(args) => args.execute()?,
         }
         log::info!("Bitcoin SPV on CKB service is stopped.");
         Ok(())
@@ -113,6 +132,7 @@ impl Cli {
             Commands::Deploy(ref args) => args.common.configure_logger(),
             Commands::Init(ref args) => args.common.configure_logger(),
             Commands::Serve(ref args) => args.common.configure_logger(),
+            Commands::Sync(ref args) => args.common.configure_logger(),
         }
     }
 }
@@ -126,6 +146,12 @@ impl CommonArgs {
 }
 
 impl CkbArgs {
+    pub fn client(&self) -> CkbRpcClient {
+        CkbRpcClient::new(self.ckb_endpoint.as_str())
+    }
+}
+
+impl CkbRoArgs {
     pub fn client(&self) -> CkbRpcClient {
         CkbRpcClient::new(self.ckb_endpoint.as_str())
     }
