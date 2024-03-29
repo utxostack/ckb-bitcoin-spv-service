@@ -67,6 +67,10 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub(crate) spv_headers_update_limit: u32,
 
+    /// The batch size that how many Bitcoin headers will be downloaded at once.
+    #[arg(long, default_value = "30")]
+    pub(crate) bitcoin_headers_download_batch_size: u32,
+
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
     pub(crate) dry_run: bool,
@@ -98,7 +102,7 @@ impl Args {
         let mut prev_tx_hash: Option<H256> = None;
 
         loop {
-            if !spv_service.sync_storage()? {
+            if !spv_service.sync_storage(self.bitcoin_headers_download_batch_size)? {
                 continue;
             }
 

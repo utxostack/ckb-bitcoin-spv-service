@@ -1,7 +1,8 @@
 //! Internal SPV service.
 
+use bitcoin::BlockHash;
 use ckb_bitcoin_spv_verifier::types::{
-    core::Hash,
+    core::{Hash, Header},
     prelude::{Pack as VPack, Unpack as VUnpack},
 };
 use ckb_sdk::rpc::CkbRpcClient;
@@ -131,7 +132,7 @@ impl SpvService {
         Err(Error::other(msg))
     }
 
-    pub(crate) fn sync_storage(&self) -> Result<bool> {
+    pub(crate) fn sync_storage(&self, batch_size: u32) -> Result<bool> {
         let spv = &self;
         let (stg_tip_height, stg_tip_header) = spv.storage.tip_state()?;
         let stg_tip_hash = stg_tip_header.block_hash();
@@ -151,16 +152,13 @@ impl SpvService {
         let btc_header = spv.btc_cli.get_block_header_by_height(stg_tip_height)?;
         let btc_hash = btc_header.block_hash();
         if stg_tip_hash == btc_hash {
-            let headers = if let Some(headers) =
-                spv.btc_cli
-                    .get_headers(stg_tip_height + 1, btc_tip_height, stg_tip_hash)?
-            {
-                headers
-            } else {
-                return Ok(false);
-            };
-            let _ = spv.storage.append_headers(headers)?;
-            return Ok(true);
+            let headers_opt = self.sync_storage_internal(
+                batch_size,
+                stg_tip_height + 1,
+                btc_tip_height,
+                stg_tip_hash,
+            )?;
+            return Ok(headers_opt.is_some());
         }
 
         log::info!("Try to find the height when fork happened");
@@ -192,16 +190,48 @@ impl SpvService {
         log::warn!("The chain in storage rollback to header#{fork_height:07}, {fork_hash:#x}");
         spv.storage.rollback_to(Some(fork_height))?;
 
-        let headers = if let Some(headers) =
-            spv.btc_cli
-                .get_headers(fork_height + 1, btc_tip_height, fork_hash.into())?
-        {
-            headers
-        } else {
-            return Ok(false);
-        };
-        let _ = spv.storage.append_headers(headers)?;
+        let headers_opt = self.sync_storage_internal(
+            batch_size,
+            fork_height + 1,
+            btc_tip_height,
+            fork_hash.into(),
+        )?;
+        Ok(headers_opt.is_some())
+    }
 
-        Ok(true)
+    fn sync_storage_internal(
+        &self,
+        batch_size: u32,
+        mut start_height: u32,
+        end_height: u32,
+        mut start_hash: BlockHash,
+    ) -> Result<Option<Vec<Header>>> {
+        let spv = self;
+        let mut headers = Vec::new();
+        while start_height <= end_height {
+            let mut next_height = start_height + batch_size;
+            if next_height > end_height {
+                next_height = end_height;
+            }
+
+            let tmp_headers = if let Some(headers) =
+                spv.btc_cli
+                    .get_headers(start_height, next_height, start_hash)?
+            {
+                headers
+            } else {
+                return Ok(None);
+            };
+
+            start_height = next_height + 1;
+            if let Some(header) = tmp_headers.last() {
+                start_hash = header.block_hash();
+            } else {
+                return Ok(None);
+            }
+            headers.extend_from_slice(&tmp_headers);
+            let _ = spv.storage.append_headers(tmp_headers)?;
+        }
+        Ok(Some(headers))
     }
 }
