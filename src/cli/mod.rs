@@ -15,6 +15,7 @@ mod deploy;
 mod init;
 mod serve;
 mod sync;
+mod watch;
 
 #[derive(Parser)]
 #[command(author, version, about)]
@@ -33,9 +34,17 @@ pub enum Commands {
     Deploy(deploy::Args),
     /// Initialize a new Bitcoin SPV instance on CKB, and initialize local storage.
     Init(init::Args),
-    /// Run a service to update a Bitcoin SPV instance base on local storage.
+    /// Run a service to update a Bitcoin SPV instance base on local storage,
+    /// and provide JSON-RPC APIs.
+    ///
+    /// If you don't want to update the Bitcoin SPV instance, try the subcommand `watch`.
     Serve(serve::Args),
-    /// Sync data to rebuild local storage base on an existed Bitcoin SPV instance.
+    /// Run a read-only service to provide JSON-RPC APIs,
+    /// without updating for the Bitcoin SPV instance.
+    ///
+    /// If you want to update the Bitcoin SPV instance, try the subcommand `serve`.
+    Watch(watch::Args),
+    /// Sync data to rebuild local storage base on an existed on-chain Bitcoin SPV instance.
     Sync(sync::Args),
 }
 
@@ -121,6 +130,7 @@ impl Cli {
             Commands::Deploy(args) => args.execute()?,
             Commands::Init(args) => args.execute()?,
             Commands::Serve(args) => args.execute()?,
+            Commands::Watch(args) => args.execute()?,
             Commands::Sync(args) => args.execute()?,
         }
         log::info!("Bitcoin SPV on CKB service is stopped.");
@@ -132,6 +142,7 @@ impl Cli {
             Commands::Deploy(ref args) => args.common.configure_logger(),
             Commands::Init(ref args) => args.common.configure_logger(),
             Commands::Serve(ref args) => args.common.configure_logger(),
+            Commands::Watch(ref args) => args.common.configure_logger(),
             Commands::Sync(ref args) => args.common.configure_logger(),
         }
     }

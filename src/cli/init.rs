@@ -89,7 +89,7 @@ pub struct Args {
 
     /// Disable the on-chain difficulty check.
     ///
-    /// Warning
+    /// ### Warning
     ///
     /// For testing purpose only.
     /// Do NOT enable this flag in production environment.
