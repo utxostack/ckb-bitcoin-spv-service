@@ -51,3 +51,6 @@ rustls-tls = ["ckb-sdk/rustls-tls", "reqwest/rustls-tls"]
 [patch.crates-io.ckb-sdk]
 git = "https://github.com/nervosnetwork/ckb-sdk-rust"
 rev = "b792ee7"
+
+[profile.release]
+overflow-checks = true
