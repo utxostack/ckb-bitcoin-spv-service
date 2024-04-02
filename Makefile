@@ -1,6 +1,6 @@
 CARGO := @cargo
 
-NEXTEST_RUN_ARGS := --no-fail-fast --success-output immediate --failure-output final
+NEXTEST_RUN_ARGS := --no-fail-fast --success-output never --failure-output final
 
 #
 # Check
@@ -16,7 +16,7 @@ clippy:
 	${CARGO} clippy --workspace --tests -- --deny warnings
 
 test:
-	${CARGO} nextest run ${NEXTEST_RUN_ARGS} --workspace types::extension::packed::test_service
+	${CARGO} nextest run ${NEXTEST_RUN_ARGS} --workspace
 
 #
 # Build
