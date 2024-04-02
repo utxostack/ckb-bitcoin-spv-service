@@ -175,6 +175,7 @@ impl SpvService {
             if stg_hash == btc_hash {
                 log::info!("Fork happened at height {height}");
                 fork_point = Some((height, btc_hash));
+                break;
             }
         }
 
