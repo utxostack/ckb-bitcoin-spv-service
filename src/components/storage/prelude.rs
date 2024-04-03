@@ -161,9 +161,10 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
         limit: u32,
     ) -> Result<(SpvClient, packed::SpvUpdate)> {
         let mut tip_height = self.get_tip_bitcoin_height()?;
-        if tip_height > prev_height + limit {
-            tip_height = prev_height + limit;
+        if limit > 0 && tip_height > prev_height.saturating_add(limit) {
+            tip_height = prev_height.saturating_add(limit);
         }
+        log::trace!("new tip height will be {tip_height}, prev {prev_height}, limit {limit}",);
         let tip_header = self.get_bitcoin_header(tip_height)?;
         let (headers_mmr_root, headers_mmr_proof) = {
             let (base_height, mmr) = self.chain_root_mmr(tip_height)?;

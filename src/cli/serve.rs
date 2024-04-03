@@ -64,6 +64,7 @@ pub struct Args {
 
     /// Don't update all headers in one CKB transaction,
     /// to avoid size limit or cycles limit.
+    /// `0` means no limit.
     #[arg(long, default_value = "10")]
     pub(crate) spv_headers_update_limit: u32,
 
@@ -158,7 +159,7 @@ impl Args {
                     let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
 
                     let (spv_client, spv_update) =
-                        storage.generate_spv_client_and_spv_update(spv_tip_height, u32::MAX)?;
+                        storage.generate_spv_client_and_spv_update(spv_tip_height, 0)?;
 
                     let tx_hash =
                         self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
