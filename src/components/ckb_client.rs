@@ -62,6 +62,7 @@ impl SpvInfoCell {
 }
 
 pub trait CkbRpcClientExtension {
+    fn dynamic_fee_rate(&self) -> Result<u64>;
     fn send_transaction_ext(&self, tx_json: TransactionView, dry_run: bool) -> Result<H256>;
     fn find_raw_spv_cells(&self, spv_type_script: Script) -> Result<Vec<LiveCell>>;
 
@@ -109,6 +110,17 @@ pub trait CkbRpcClientExtension {
 }
 
 impl CkbRpcClientExtension for CkbRpcClient {
+    fn dynamic_fee_rate(&self) -> Result<u64> {
+        self.get_fee_rate_statistics(None)?
+            .ok_or_else(|| {
+                let msg = "remote server replied null for \
+                    RPC method get_fee_rate_statistics(null)";
+                Error::other(msg)
+            })
+            .map(|resp| resp.median)
+            .map(Into::into)
+    }
+
     fn send_transaction_ext(&self, tx_json: TransactionView, dry_run: bool) -> Result<H256> {
         if log::log_enabled!(log::Level::Trace) {
             match serde_json::to_string_pretty(&tx_json) {
@@ -146,6 +158,8 @@ impl CkbRpcClientExtension for CkbRpcClient {
                 Error::other(msg)
             })?
             .unpack();
+
+        log::trace!("the type script of SPV cell is {spv_type_script}");
 
         let query = CellQueryOptions::new(spv_type_script, PrimaryScriptType::Type);
         let order = Order::Desc;
