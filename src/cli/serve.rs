@@ -1,6 +1,9 @@
 //! The `serve` sub-command.
 
-use std::{cmp::Ordering, collections::HashMap, net::SocketAddr, path::PathBuf, thread, time};
+use std::{
+    cmp::Ordering, collections::HashMap, net::SocketAddr, num::NonZeroU32, path::PathBuf, thread,
+    time,
+};
 
 use ckb_bitcoin_spv_verifier::types::{core::SpvClient, packed, prelude::Pack as VPack};
 use ckb_jsonrpc_types::{Status, TransactionView};
@@ -64,9 +67,8 @@ pub struct Args {
 
     /// Don't update all headers in one CKB transaction,
     /// to avoid size limit or cycles limit.
-    /// `0` means no limit.
     #[arg(long, default_value = "10")]
-    pub(crate) spv_headers_update_limit: u32,
+    pub(crate) spv_headers_update_limit: NonZeroU32,
 
     /// The batch size that how many Bitcoin headers will be downloaded at once.
     #[arg(long, default_value = "30")]
@@ -158,8 +160,8 @@ impl Args {
 
                     let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
 
-                    let (spv_client, spv_update) =
-                        storage.generate_spv_client_and_spv_update(spv_tip_height, 0)?;
+                    let (spv_client, spv_update) = storage
+                        .generate_spv_client_and_spv_update(spv_tip_height, NonZeroU32::MAX)?;
 
                     let tx_hash =
                         self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;

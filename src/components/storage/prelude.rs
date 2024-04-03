@@ -1,3 +1,5 @@
+use std::num::NonZeroU32;
+
 use bitcoin::constants::DIFFCHANGE_INTERVAL;
 use ckb_bitcoin_spv_verifier::{
     types::{
@@ -158,11 +160,11 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
     fn generate_spv_client_and_spv_update(
         &self,
         prev_height: u32,
-        limit: u32,
+        limit: NonZeroU32,
     ) -> Result<(SpvClient, packed::SpvUpdate)> {
         let mut tip_height = self.get_tip_bitcoin_height()?;
-        if limit > 0 && tip_height > prev_height.saturating_add(limit) {
-            tip_height = prev_height.saturating_add(limit);
+        if tip_height > prev_height.saturating_add(limit.into()) {
+            tip_height = prev_height.saturating_add(limit.into());
         }
         log::trace!("new tip height will be {tip_height}, prev {prev_height}, limit {limit}",);
         let tip_header = self.get_bitcoin_header(tip_height)?;
