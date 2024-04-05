@@ -113,12 +113,20 @@ impl SpvService {
             let packed_spv_header_root = spv_header_root.pack();
 
             if packed_stg_header_root.as_slice() == packed_spv_header_root.as_slice() {
-                let input = SpvReorgInput {
-                    info,
-                    curr: cell.clone(),
-                    stale,
-                };
-                return Ok(input);
+                if stale.len() > 1 {
+                    let input = SpvReorgInput {
+                        info,
+                        curr: cell.clone(),
+                        stale,
+                    };
+                    return Ok(input);
+                } else {
+                    log::warn!(
+                        "[TODO::KnownIssue] this is a dirty patch to fix an issue in the contract: \
+                        update and reorg only 1 block are indistinguishable, \
+                        let's just reorg 1 more client"
+                    );
+                }
             }
 
             log::trace!("[onchain] header#{spv_height}; mmr-root {spv_header_root}");
