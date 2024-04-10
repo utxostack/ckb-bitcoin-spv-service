@@ -37,6 +37,7 @@ use crate::{
     },
     prelude::*,
     result::{Error, Result},
+    utilities::try_raise_fd_limit,
 };
 
 #[derive(Parser)]
@@ -82,6 +83,8 @@ pub struct Args {
 impl Args {
     pub fn execute(&self) -> Result<()> {
         log::info!("Starting the Bitcoin SPV service");
+
+        try_raise_fd_limit();
 
         let storage = Storage::new(&self.data_dir)?;
         if !storage.is_initialized()? {
