@@ -13,7 +13,7 @@ fmt:
 	${CARGO} fmt --all --check
 
 clippy:
-	${CARGO} clippy --workspace --tests -- --deny warnings
+	${CARGO} clippy --locked --workspace --tests -- --deny warnings
 
 test:
 	${CARGO} nextest run ${NEXTEST_RUN_ARGS} --workspace
