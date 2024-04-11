@@ -74,7 +74,7 @@ impl Args {
             NetworkInfo::new(self.ckb.network, self.ckb.ckb_endpoint.as_str().to_owned());
         let configuration = {
             let mut tmp = TransactionBuilderConfiguration::new_with_network(network_info.clone())?;
-            tmp.fee_rate = self.ckb.fee_rate;
+            tmp.fee_rate = self.ckb.fee_rate()?;
             tmp
         };
 

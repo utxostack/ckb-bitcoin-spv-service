@@ -1,12 +1,14 @@
 //! The command line argument.
 
 use ckb_sdk::{rpc::CkbRpcClient, types::NetworkType};
-use clap::{Parser, Subcommand};
+use ckb_types::core::FeeRate;
+use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use url::Url;
 
 use crate::{
     components::BitcoinClient,
+    prelude::*,
     result::Result,
     utilities::{value_parsers, Key256Bits},
 };
@@ -66,11 +68,10 @@ pub struct CkbArgs {
         value_parser = value_parsers::NetworkTypeValueParser,
         default_value = "testnet"
     )]
-    pub network: NetworkType,
+    pub(crate) network: NetworkType,
 
-    /// The fee rate for CKB transactions.
-    #[arg(long = "ckb-fee-rate", default_value = "1000")]
-    pub(crate) fee_rate: u64,
+    #[command(flatten)]
+    pub(crate) fee_rate: FeeRateArgs,
 
     /// A binary file, which contains a secp256k1 private key.
     /// This private key will be used to provide all CKBytes.
@@ -92,7 +93,39 @@ pub struct CkbRoArgs {
         value_parser = value_parsers::NetworkTypeValueParser,
         default_value = "testnet"
     )]
-    pub network: NetworkType,
+    pub(crate) network: NetworkType,
+}
+
+#[derive(Args)]
+#[group(multiple = false)]
+pub struct FeeRateArgs {
+    /// The fixed fee rate for CKB transactions.
+    #[arg(
+        group = "fixed-fee-rate",
+        conflicts_with = "dynamic-fee-rate",
+        long = "ckb-fee-rate",
+        default_value = "1000"
+    )]
+    fixed_value: u64,
+
+    /// [Experimental] Enable dynamic fee rate for CKB transactions.
+    ///
+    /// The actual fee rate will be the `median` fee rate which is fetched through the CKB RPC method `get_fee_rate_statistics`.
+    ///
+    /// For security, a hard limit is required.
+    /// When the returned dynamic fee rate is larger than the hard limit, the hard limit will be used.
+    ///
+    /// ### Warning
+    ///
+    /// Users have to make sure the remote CKB node they used are trustsed.
+    ///
+    /// Ref: <https://github.com/nervosnetwork/ckb/tree/v0.114.0/rpc#method-get_fee_rate_statistics>
+    #[arg(
+        group = "dynamic-fee-rate",
+        conflicts_with = "fixed-fee-rate",
+        long = "enable-dynamic-ckb-fee-rate-with-limit"
+    )]
+    limit_for_dynamic: Option<u64>,
 }
 
 #[derive(Parser)]
@@ -159,6 +192,29 @@ impl CommonArgs {
 impl CkbArgs {
     pub fn client(&self) -> CkbRpcClient {
         CkbRpcClient::new(self.ckb_endpoint.as_str())
+    }
+
+    pub fn fee_rate(&self) -> Result<u64> {
+        let value = if let Some(limit) = self.fee_rate.limit_for_dynamic {
+            let dynamic = self.client().dynamic_fee_rate()?;
+            log::info!("CKB fee rate: {} (dynamic)", FeeRate(dynamic));
+            if dynamic > limit {
+                log::warn!(
+                    "dynamic CKB fee rate {} is too large, it seems unreasonable;\
+                    so the upper limit {} will be used",
+                    FeeRate(dynamic),
+                    FeeRate(limit)
+                );
+                limit
+            } else {
+                dynamic
+            }
+        } else {
+            let fixed = self.fee_rate.fixed_value;
+            log::info!("CKB fee rate: {} (fixed)", FeeRate(fixed));
+            fixed
+        };
+        Ok(value)
     }
 }
 
