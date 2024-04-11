@@ -128,7 +128,6 @@ impl SpvRpc for SpvRpcImpl {
         })?;
         log::trace!(">>> tip height in local storage is {stg_tip_height}");
 
-        // TODO Define server errors with enum.
         if stg_tip_height < target_height {
             let desc = format!(
                 "target transaction is in header#{target_height}, \
