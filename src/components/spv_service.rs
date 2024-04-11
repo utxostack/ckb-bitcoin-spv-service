@@ -39,12 +39,6 @@ pub enum SpvOperation {
 }
 
 impl SpvService {
-    pub(crate) fn find_best_spv_client(&self, height: u32) -> Result<SpvClientCell> {
-        let spv_type_script = self.storage.spv_contract_type_script()?;
-        self.ckb_cli
-            .find_best_spv_client(spv_type_script, Some(height))
-    }
-
     pub(crate) fn select_operation(&self) -> Result<SpvOperation> {
         let spv_type_script = self.storage.spv_contract_type_script()?;
         let ins = self.ckb_cli.find_spv_cells(spv_type_script)?;

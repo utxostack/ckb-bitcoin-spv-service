@@ -1,6 +1,6 @@
 //! Expand the functionality of the original CKB RPC client.
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use ckb_bitcoin_spv_verifier::types::{
     core::{SpvClient, SpvInfo},
@@ -36,6 +36,7 @@ pub struct SpvClientCell {
     pub(crate) cell: LiveCell,
 }
 
+#[derive(Clone)]
 pub struct SpvInstance {
     pub(crate) info: SpvInfoCell,
     pub(crate) clients: HashMap<u8, SpvClientCell>,
@@ -76,35 +77,11 @@ pub trait CkbRpcClientExtension {
         spv_type_script: Script,
         height_opt: Option<u32>,
     ) -> Result<SpvClientCell> {
-        let SpvInstance { mut info, clients } = self.find_spv_cells(spv_type_script)?;
+        let instance = self.find_spv_cells(spv_type_script)?;
         if let Some(height) = height_opt {
-            for _ in 0..clients.len() {
-                let cell = clients.get(&info.info.tip_client_id).ok_or_else(|| {
-                    let msg = format!(
-                        "the SPV client (id={}) is not found",
-                        info.info.tip_client_id
-                    );
-                    Error::other(msg)
-                })?;
-                if cell.client.headers_mmr_root.max_height <= height {
-                    return Ok(cell.to_owned());
-                }
-                info.info.tip_client_id = info.prev_tip_client_id();
-            }
-            let msg =
-                format!("all SPV clients have better heights than server has (height: {height})");
-            Err(Error::other(msg))
+            instance.find_best_spv_client_include_height(height)
         } else {
-            clients
-                .get(&info.info.tip_client_id)
-                .ok_or_else(|| {
-                    let msg = format!(
-                        "the SPV client (id={}) is not found",
-                        info.info.tip_client_id
-                    );
-                    Error::other(msg)
-                })
-                .cloned()
+            instance.find_tip_spv_client()
         }
     }
 }
@@ -180,6 +157,52 @@ impl CkbRpcClientExtension for CkbRpcClient {
                     Err(Error::other(msg))
                 }
             })
+    }
+}
+
+impl SpvInstance {
+    pub(crate) fn find_tip_spv_client(&self) -> Result<SpvClientCell> {
+        self.clients
+            .get(&self.info.info.tip_client_id)
+            .ok_or_else(|| {
+                let msg = format!(
+                    "the SPV client (id={}) is not found",
+                    self.info.info.tip_client_id
+                );
+                Error::other(msg)
+            })
+            .cloned()
+    }
+
+    pub(crate) fn find_best_spv_client_include_height(&self, height: u32) -> Result<SpvClientCell> {
+        let SpvInstance { ref info, clients } = self;
+        let mut info = info.to_owned();
+        for _ in 0..clients.len() {
+            let cell = clients.get(&info.info.tip_client_id).ok_or_else(|| {
+                let msg = format!(
+                    "the SPV client (id={}) is not found",
+                    info.info.tip_client_id
+                );
+                Error::other(msg)
+            })?;
+            if cell.client.headers_mmr_root.max_height <= height {
+                return Ok(cell.to_owned());
+            }
+            info.info.tip_client_id = info.prev_tip_client_id();
+        }
+        let msg = format!("all SPV clients have better heights than server has (height: {height})");
+        Err(Error::other(msg))
+    }
+}
+
+impl fmt::Display for SpvInstance {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(
+            f,
+            "{{ tip: {}, clients-count: {} }}",
+            self.info.info.tip_client_id,
+            self.clients.len()
+        )
     }
 }
 
