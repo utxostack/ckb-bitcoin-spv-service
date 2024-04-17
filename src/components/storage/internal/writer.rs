@@ -51,8 +51,4 @@ impl StorageWriter for Storage {
     fn put_spv_contract_cell_dep(&self, cell_dep: CellDep) -> Result<()> {
         self.put(keys::SPV_CONTRACT_CELL_DEP, cell_dep.as_slice())
     }
-
-    fn put_lock_contract_cell_dep(&self, cell_dep: CellDep) -> Result<()> {
-        self.put(keys::LOCK_CONTRACT_CELL_DEP, cell_dep.as_slice())
-    }
 }

@@ -84,12 +84,4 @@ impl StorageReader for Storage {
             .map_err(Into::into)
             .and_then(|opt| opt.ok_or_else(|| Error::not_found("the SPV script cell dep")))
     }
-
-    fn get_lock_contract_cell_dep(&self) -> Result<CellDep> {
-        self.get(keys::LOCK_CONTRACT_CELL_DEP)?
-            .map(|raw| CellDepReader::from_slice(&raw).map(|reader| reader.to_entity()))
-            .transpose()
-            .map_err(Into::into)
-            .and_then(|opt| opt.ok_or_else(|| Error::not_found("the lock script cell dep")))
-    }
 }
