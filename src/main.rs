@@ -1,5 +1,6 @@
 pub(crate) mod cli;
 pub(crate) mod components;
+pub(crate) mod constants;
 pub(crate) mod prelude;
 pub(crate) mod result;
 pub(crate) mod utilities;

@@ -1,8 +1,12 @@
 //! The `serve` sub-command.
 
 use std::{
-    cmp::Ordering, collections::HashMap, net::SocketAddr, num::NonZeroU32, path::PathBuf, thread,
-    time,
+    cmp::Ordering,
+    collections::{HashMap, HashSet},
+    net::SocketAddr,
+    num::NonZeroU32,
+    path::PathBuf,
+    thread, time,
 };
 
 use ckb_bitcoin_spv_verifier::types::{core::SpvClient, packed, prelude::Pack as VPack};
@@ -17,13 +21,13 @@ use ckb_sdk::{
         TransactionBuilderConfiguration,
     },
     types::{
-        Address as CkbAddress, AddressPayload as CkbAddressPayload, NetworkInfo, ScriptGroup,
-        TransactionWithScriptGroups,
+        Address as CkbAddress, AddressPayload as CkbAddressPayload, NetworkInfo, NetworkType,
+        ScriptGroup, TransactionWithScriptGroups,
     },
     SECP256K1,
 };
 use ckb_types::{
-    core::DepType,
+    core::{Capacity, DepType},
     packed::{Byte32, Bytes as PackedBytes, BytesOpt, CellDep, CellInput, CellOutput, WitnessArgs},
     prelude::*,
     H256,
@@ -35,9 +39,10 @@ use crate::{
     components::{
         ApiServiceConfig, SpvOperation, SpvReorgInput, SpvService, SpvUpdateInput, Storage,
     },
+    constants,
     prelude::*,
     result::{Error, Result},
-    utilities::try_raise_fd_limit,
+    utilities::{try_raise_fd_limit, value_parsers},
 };
 
 #[derive(Parser)]
@@ -75,6 +80,10 @@ pub struct Args {
     #[arg(long, default_value = "30")]
     pub(crate) bitcoin_headers_download_batch_size: u32,
 
+    /// The owner of Bitcoin SPV cells.
+    #[arg(long, value_parser = value_parsers::AddressValueParser)]
+    pub(crate) spv_owner: Option<CkbAddress>,
+
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
     pub(crate) dry_run: bool,
@@ -83,6 +92,13 @@ pub struct Args {
 impl Args {
     pub fn execute(&self) -> Result<()> {
         log::info!("Starting the Bitcoin SPV service");
+
+        if let Some(ref addr) = self.spv_owner {
+            if addr.network() != self.ckb.network {
+                let msg = "The input addresses and the selected network are not matched";
+                return Err(Error::cli(msg));
+            }
+        }
 
         try_raise_fd_limit();
 
@@ -216,19 +232,37 @@ impl Args {
         tx_builder.inputs(spv_inputs);
 
         let spv_contract_cell_dep = spv.storage.spv_contract_cell_dep()?;
-        let lock_contract_cell_dep = spv.storage.lock_contract_cell_dep()?;
         tx_builder.cell_dep(spv_contract_cell_dep);
-        tx_builder.cell_dep(lock_contract_cell_dep);
         let spv_client_curr_cell_dep = CellDep::new_builder()
             .out_point(update_input.curr.cell.out_point)
             .dep_type(DepType::Code.into())
             .build();
         tx_builder.cell_dep(spv_client_curr_cell_dep);
 
-        let spv_outputs: Vec<CellOutput> = vec![
-            update_input.info.cell.output.clone(),
-            update_input.next.cell.output.clone(),
-        ];
+        // Try to insert cell deps for the lock scripts.
+        match self.ckb.network {
+            NetworkType::Mainnet | NetworkType::Testnet => {
+                let known_cell_dep = if self.ckb.network == NetworkType::Mainnet {
+                    constants::mainnet::known_cell_dep
+                } else {
+                    constants::testnet::known_cell_dep
+                };
+                #[allow(clippy::mutable_key_type)]
+                let mut handled_code_hashes = HashSet::new();
+                for cell in [&update_input.info.cell, &update_input.next.cell] {
+                    let code_hash = cell.output.lock().code_hash();
+                    if handled_code_hashes.insert(code_hash.clone()) {
+                        if let Some(cell_dep) = known_cell_dep(&code_hash) {
+                            tx_builder.cell_dep(cell_dep);
+                        }
+                    }
+                }
+            }
+            _ => {
+                log::warn!("Unsupport CKB network \"{}\"", self.ckb.network);
+            }
+        }
+
         let spv_outputs_data = {
             spv_client.id = update_input.next.client.id;
             let mut spv_info = update_input.info.info;
@@ -237,6 +271,55 @@ impl Args {
             let packed_spv_client: packed::SpvClient = spv_client.pack();
             vec![packed_spv_info.as_bytes(), packed_spv_client.as_bytes()]
         };
+        let spv_outputs: Vec<CellOutput> = if let Some(ref addr) = self.spv_owner {
+            let spv_info_capacity = Capacity::bytes(spv_outputs_data[0].len()).map_err(|err| {
+                let msg = format!(
+                    "failed to calculate the capacity for Bitcoin SPV info cell since {err}"
+                );
+                Error::other(msg)
+            })?;
+            let spv_client_capacity =
+                Capacity::bytes(spv_outputs_data[1].len()).map_err(|err| {
+                    let msg = format!(
+                        "failed to calculate the capacity for Bitcoin SPV client cell since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+            let info_output = update_input
+                .info
+                .cell
+                .output
+                .clone()
+                .as_builder()
+                .lock(addr.into())
+                .build_exact_capacity(spv_info_capacity)
+                .map_err(|err| {
+                    let msg = format!(
+                        "failed to sum the total capacity for Bitcoin SPV info cell since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+            let client_output = update_input
+                .next
+                .cell
+                .output
+                .clone()
+                .as_builder()
+                .lock(addr.into())
+                .build_exact_capacity(spv_client_capacity)
+                .map_err(|err| {
+                    let msg = format!(
+                        "failed to sum the total capacity for Bitcoin SPV client cell since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+            vec![info_output, client_output]
+        } else {
+            vec![
+                update_input.info.cell.output.clone(),
+                update_input.next.cell.output.clone(),
+            ]
+        };
         tx_builder.outputs(spv_outputs);
         tx_builder.outputs_data(spv_outputs_data.iter().map(Pack::pack));
 
@@ -244,6 +327,21 @@ impl Args {
         let mut lock_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
         #[allow(clippy::mutable_key_type)]
         let mut type_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
+
+        {
+            let lock_script = update_input.info.cell.output.lock();
+            lock_groups
+                .entry(lock_script.calc_script_hash())
+                .or_insert_with(|| ScriptGroup::from_lock_script(&lock_script))
+                .input_indices
+                .push(0);
+            let lock_script = update_input.next.cell.output.lock();
+            lock_groups
+                .entry(lock_script.calc_script_hash())
+                .or_insert_with(|| ScriptGroup::from_lock_script(&lock_script))
+                .input_indices
+                .push(1);
+        }
 
         for (output_idx, output) in tx_builder.get_outputs().clone().iter().enumerate() {
             if let Some(type_script) = &output.type_().to_opt() {
@@ -392,22 +490,43 @@ impl Args {
         tx_builder.inputs(spv_inputs);
 
         let spv_contract_cell_dep = spv.storage.spv_contract_cell_dep()?;
-        let lock_contract_cell_dep = spv.storage.lock_contract_cell_dep()?;
         tx_builder.cell_dep(spv_contract_cell_dep);
-        tx_builder.cell_dep(lock_contract_cell_dep);
         let spv_client_curr_cell_dep = CellDep::new_builder()
             .out_point(reorg_input.curr.cell.out_point)
             .dep_type(DepType::Code.into())
             .build();
         tx_builder.cell_dep(spv_client_curr_cell_dep);
 
-        let spv_outputs = {
-            let mut outputs = vec![reorg_input.info.cell.output.clone()];
-            for client in &reorg_input.stale {
-                outputs.push(client.cell.output.clone());
+        // Try to insert cell deps for the lock scripts.
+        match self.ckb.network {
+            NetworkType::Mainnet | NetworkType::Testnet => {
+                let known_cell_dep = if self.ckb.network == NetworkType::Mainnet {
+                    constants::mainnet::known_cell_dep
+                } else {
+                    constants::testnet::known_cell_dep
+                };
+                #[allow(clippy::mutable_key_type)]
+                let mut handled_code_hashes = HashSet::new();
+                let code_hash = reorg_input.info.cell.output.lock().code_hash();
+                if handled_code_hashes.insert(code_hash.clone()) {
+                    if let Some(cell_dep) = known_cell_dep(&code_hash) {
+                        tx_builder.cell_dep(cell_dep);
+                    }
+                }
+                for client in &reorg_input.stale {
+                    let code_hash = client.cell.output.lock().code_hash();
+                    if handled_code_hashes.insert(code_hash.clone()) {
+                        if let Some(cell_dep) = known_cell_dep(&code_hash) {
+                            tx_builder.cell_dep(cell_dep);
+                        }
+                    }
+                }
             }
-            outputs
-        };
+            _ => {
+                log::warn!("Unsupport CKB network \"{}\"", self.ckb.network);
+            }
+        }
+
         let spv_outputs_data = {
             let mut spv_info = reorg_input.info.info.clone();
             spv_info.tip_client_id = reorg_input.info.next_tip_client_id();
@@ -420,6 +539,59 @@ impl Args {
             }
             outputs_data
         };
+        let spv_outputs = if let Some(ref addr) = self.spv_owner {
+            let spv_info_capacity = Capacity::bytes(spv_outputs_data[0].len()).map_err(|err| {
+                let msg = format!(
+                    "failed to calculate the capacity for Bitcoin SPV info cell since {err}"
+                );
+                Error::other(msg)
+            })?;
+            let spv_client_capacity =
+                Capacity::bytes(spv_outputs_data[1].len()).map_err(|err| {
+                    let msg = format!(
+                        "failed to calculate the capacity for Bitcoin SPV client cell since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+            let info_output = reorg_input
+                .info
+                .cell
+                .output
+                .clone()
+                .as_builder()
+                .lock(addr.into())
+                .build_exact_capacity(spv_info_capacity)
+                .map_err(|err| {
+                    let msg = format!(
+                        "failed to sum the total capacity for Bitcoin SPV info cell since {err}"
+                    );
+                    Error::other(msg)
+                })?;
+            let mut outputs = vec![info_output];
+            for client in &reorg_input.stale {
+                let client_output = client
+                    .cell
+                    .output
+                    .clone()
+                    .as_builder()
+                    .lock(addr.into())
+                    .build_exact_capacity(spv_client_capacity)
+                    .map_err(|err| {
+                        let msg = format!(
+                            "failed to sum the total capacity for Bitcoin SPV client cell since {err}"
+                        );
+                        Error::other(msg)
+                    })?;
+                outputs.push(client_output);
+            }
+            outputs
+        } else {
+            let mut outputs = vec![reorg_input.info.cell.output.clone()];
+            for client in &reorg_input.stale {
+                outputs.push(client.cell.output.clone());
+            }
+            outputs
+        };
         tx_builder.outputs(spv_outputs);
         tx_builder.outputs_data(spv_outputs_data.iter().map(Pack::pack));
 
@@ -427,6 +599,23 @@ impl Args {
         let mut lock_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
         #[allow(clippy::mutable_key_type)]
         let mut type_groups: HashMap<Byte32, ScriptGroup> = HashMap::default();
+
+        {
+            let lock_script = reorg_input.info.cell.output.lock();
+            lock_groups
+                .entry(lock_script.calc_script_hash())
+                .or_insert_with(|| ScriptGroup::from_lock_script(&lock_script))
+                .input_indices
+                .push(0);
+            for (index, client) in reorg_input.stale.iter().enumerate() {
+                let lock_script = client.cell.output.lock();
+                lock_groups
+                    .entry(lock_script.calc_script_hash())
+                    .or_insert_with(|| ScriptGroup::from_lock_script(&lock_script))
+                    .input_indices
+                    .push(index + 1);
+            }
+        }
 
         for (output_idx, output) in tx_builder.get_outputs().clone().iter().enumerate() {
             if let Some(type_script) = &output.type_().to_opt() {

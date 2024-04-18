@@ -30,7 +30,6 @@ pub(crate) trait StorageReader: Send + Sync + Sized {
     // For CKB transactions
     fn get_spv_contract_type_script(&self) -> Result<Script>;
     fn get_spv_contract_cell_dep(&self) -> Result<CellDep>;
-    fn get_lock_contract_cell_dep(&self) -> Result<CellDep>;
 }
 
 pub(crate) trait StorageWriter: Send + Sync + Sized {
@@ -45,7 +44,6 @@ pub(crate) trait StorageWriter: Send + Sync + Sized {
     // For CKB transactions
     fn put_spv_contract_type_script(&self, type_script: Script) -> Result<()>;
     fn put_spv_contract_cell_dep(&self, cell_dep: CellDep) -> Result<()>;
-    fn put_lock_contract_cell_dep(&self, cell_dep: CellDep) -> Result<()>;
 }
 
 // Private APIs: for internal use.
@@ -106,15 +104,9 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
         Ok(spv_client)
     }
 
-    fn save_cells_state(
-        &self,
-        spv_script: Script,
-        spv_cell_dep: CellDep,
-        lock_cell_dep: CellDep,
-    ) -> Result<()> {
+    fn save_cells_state(&self, spv_script: Script, spv_cell_dep: CellDep) -> Result<()> {
         self.put_spv_contract_type_script(spv_script.clone())?;
         self.put_spv_contract_cell_dep(spv_cell_dep.clone())?;
-        self.put_lock_contract_cell_dep(lock_cell_dep.clone())?;
         Ok(())
     }
 
@@ -294,10 +286,6 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
 
     fn spv_contract_cell_dep(&self) -> Result<CellDep> {
         self.get_spv_contract_cell_dep()
-    }
-
-    fn lock_contract_cell_dep(&self) -> Result<CellDep> {
-        self.get_lock_contract_cell_dep()
     }
 }
 

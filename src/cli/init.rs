@@ -75,14 +75,6 @@ pub struct Args {
     #[arg(long, value_parser = value_parsers::OutPointValueParser)]
     pub(crate) spv_contract_out_point: OutPoint,
 
-    /// The out point of the lock contract.
-    ///
-    /// The lock contract has to satisfy that:
-    /// - If total capacity of cells which use this lock script were not
-    ///   decreased, any non-owner users can update them.
-    #[arg(long, value_parser = value_parsers::OutPointValueParser)]
-    pub(crate) lock_contract_out_point: OutPoint,
-
     /// The owner of Bitcoin SPV cells.
     #[arg(long, value_parser = value_parsers::AddressValueParser)]
     pub(crate) spv_owner: CkbAddress,
@@ -166,10 +158,6 @@ impl Args {
             .out_point(self.spv_contract_out_point.clone())
             .dep_type(DepType::Code.into())
             .build();
-        let lock_contract_cell_dep = CellDep::new_builder()
-            .out_point(self.lock_contract_out_point.clone())
-            .dep_type(DepType::Code.into())
-            .build();
         tx_builder.cell_dep(spv_contract_cell_dep.clone());
 
         log::debug!("Try to find the first live cell for {deployer}");
@@ -223,11 +211,7 @@ impl Args {
             }
         };
 
-        storage.save_cells_state(
-            spv_type_script.clone(),
-            spv_contract_cell_dep,
-            lock_contract_cell_dep,
-        )?;
+        storage.save_cells_state(spv_type_script.clone(), spv_contract_cell_dep)?;
 
         let spv_outputs = {
             let spv_info_capacity = Capacity::bytes(spv_outputs_data[0].len()).map_err(|err| {
