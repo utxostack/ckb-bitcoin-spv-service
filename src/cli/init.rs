@@ -18,8 +18,8 @@ use ckb_sdk::{
         TransactionBuilderConfiguration,
     },
     types::{
-        Address as CkbAddress, AddressPayload as CkbAddressPayload, NetworkInfo, ScriptGroup,
-        TransactionWithScriptGroups,
+        Address as CkbAddress, AddressPayload as CkbAddressPayload, NetworkInfo, NetworkType,
+        ScriptGroup, TransactionWithScriptGroups,
     },
     SECP256K1,
 };
@@ -75,9 +75,8 @@ pub struct Args {
     #[arg(long, value_parser = value_parsers::OutPointValueParser)]
     pub(crate) spv_contract_out_point: OutPoint,
 
-    /// The owner of Bitcoin SPV cells.
-    #[arg(long, value_parser = value_parsers::AddressValueParser)]
-    pub(crate) spv_owner: CkbAddress,
+    #[clap(flatten)]
+    pub(crate) spv_owner: super::SpvOwner,
 
     /// Disable the on-chain difficulty check.
     ///
@@ -110,9 +109,14 @@ impl Args {
     pub fn execute(&self) -> Result<()> {
         log::info!("Try to initialize a Bitcoin SPV instance on CKB");
 
+        if self.disable_difficulty_check && self.ckb.network == NetworkType::Mainnet {
+            let msg = "For safety, the option `self.disable_difficulty_check` \
+                are not allowed on the mainnet";
+            return Err(Error::other(msg));
+        }
+
         self.check_inputs()?;
         log::info!("The bitcoin start height is {}", self.bitcoin_start_height);
-        self.check_remotes()?;
 
         let btc_start_header = self
             .bitcoin
@@ -228,7 +232,7 @@ impl Args {
                     Error::other(msg)
                 })?;
             let spv_cell = CellOutput::new_builder()
-                .lock((&self.spv_owner).into())
+                .lock(self.spv_owner.lock_script())
                 .type_(Some(spv_type_script).pack())
                 .build();
             let spv_info = spv_cell
@@ -389,36 +393,7 @@ impl Args {
     }
 
     fn check_inputs(&self) -> Result<()> {
-        if self.spv_owner.network() != self.ckb.network {
-            let msg = "The input addresses and the selected network are not matched";
-            return Err(Error::cli(msg));
-        }
-
-        if self.spv_clients_count < 3 {
-            let msg = format!(
-                "The Bitcoint SPV clients count should be 3 at least but got {}",
-                self.spv_clients_count
-            );
-            return Err(Error::cli(msg));
-        }
-
-        if self.bitcoin_start_height % DIFFCHANGE_INTERVAL != 0 {
-            let msg = format!(
-                "invalid Bitcoint start height, expected multiples of \
-                {DIFFCHANGE_INTERVAL} but got {}",
-                self.bitcoin_start_height
-            );
-            return Err(Error::cli(msg));
-        }
-
-        Ok(())
-    }
-
-    fn check_remotes(&self) -> Result<()> {
-        if self.spv_owner.network() != self.ckb.network {
-            let msg = "The input addresses and the selected network are not matched";
-            return Err(Error::cli(msg));
-        }
+        self.spv_owner.check_network(self.ckb.network)?;
 
         if self.spv_clients_count < 3 {
             let msg = format!(
