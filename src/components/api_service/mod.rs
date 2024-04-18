@@ -1,6 +1,6 @@
 //! JSON-RPC APIs service.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::RwLock, time::SystemTime};
 
 use bitcoin::Txid;
 use ckb_bitcoin_spv_verifier::types::{
@@ -16,7 +16,7 @@ use jsonrpc_server_utils::{cors::AccessControlAllowOrigin, hosts::DomainsValidat
 use serde::Serialize;
 
 use crate::{
-    components::{SpvClientCell, SpvService},
+    components::{SpvInstance, SpvService},
     prelude::*,
     result::{Error, Result},
 };
@@ -24,6 +24,9 @@ use crate::{
 mod error;
 
 pub use error::ApiErrorCode;
+
+// Bitcoin target block time is 10 minutes.
+const SPV_INSTANCE_CACHED_SECS: u64 = 60 * 10;
 
 pub struct ApiServiceConfig {
     listen_address: SocketAddr,
@@ -48,6 +51,13 @@ pub trait SpvRpc {
 
 pub struct SpvRpcImpl {
     spv_service: SpvService,
+    cached_spv_instance: RwLock<Option<CachedSpvInstance>>,
+}
+
+#[derive(Clone)]
+struct CachedSpvInstance {
+    instance: SpvInstance,
+    expired_timestamp: u64,
 }
 
 impl ApiServiceConfig {
@@ -74,7 +84,69 @@ impl ApiServiceConfig {
 
 impl SpvRpcImpl {
     pub fn new(spv_service: SpvService) -> Self {
-        Self { spv_service }
+        Self {
+            spv_service,
+            cached_spv_instance: RwLock::new(None),
+        }
+    }
+
+    fn load_spv_instance(&self) -> Option<SpvInstance> {
+        if let Some(cached) = self
+            .cached_spv_instance
+            .read()
+            .ok()
+            .and_then(|locked| locked.as_ref().cloned())
+        {
+            if let Ok(dur) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                let current_timestamp = dur.as_secs();
+                if current_timestamp > cached.expired_timestamp {
+                    log::trace!(
+                        "cached SPV instance is expired, expired at {}, now is {current_timestamp}",
+                        cached.expired_timestamp
+                    );
+                    None
+                } else {
+                    log::trace!(
+                        "cached SPV instance is loaded, will be expired at {}, now is {current_timestamp}",
+                        cached.expired_timestamp
+                    );
+                    Some(cached.instance)
+                }
+            } else {
+                log::warn!("failed to read current timestamp for load the cached SPV instance");
+                None
+            }
+        } else {
+            log::debug!("failed to load cached SPV instance: not existed or lock error");
+            None
+        }
+    }
+
+    fn update_spv_instance(&self, instance: SpvInstance) {
+        match self.cached_spv_instance.write() {
+            Ok(mut locked) => {
+                if let Ok(dur) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
+                    let current_timestamp = dur.as_secs();
+                    let expired_timestamp = current_timestamp + SPV_INSTANCE_CACHED_SECS;
+                    let cache = CachedSpvInstance {
+                        instance,
+                        expired_timestamp,
+                    };
+                    *locked = Some(cache);
+                    log::debug!(
+                        "refreshed the cached SPV instance, it will be expired at {expired_timestamp}, \
+                        now is {current_timestamp}",
+                    );
+                } else {
+                    log::warn!(
+                        "failed to read current timestamp for update the cached SPV instance"
+                    );
+                }
+            }
+            Err(err) => {
+                log::debug!("failed to update the cached SPV instance since {err}");
+            }
+        }
     }
 }
 
@@ -85,7 +157,7 @@ impl SpvRpc for SpvRpcImpl {
         tx_index: u32,
         confirmations: u32,
     ) -> RpcResult<BitcoinTxProof> {
-        log::trace!("Call getTxProof with params [{txid:#x}, {confirmations}]");
+        log::debug!("Call getTxProof with params [{txid:#x}, {confirmations}]");
         let spv = &self.spv_service;
 
         let (target_height, target_hash, raw_tx_out_proof) =
@@ -126,7 +198,7 @@ impl SpvRpc for SpvRpcImpl {
                 data: None,
             }
         })?;
-        log::trace!(">>> tip height in local storage is {stg_tip_height}");
+        log::debug!(">>> tip height in local storage is {stg_tip_height}");
 
         if stg_tip_height < target_height {
             let desc = format!(
@@ -160,19 +232,56 @@ impl SpvRpc for SpvRpcImpl {
             return Err(ApiErrorCode::StorageHeaderUnmatched.with_desc(desc));
         }
 
-        let spv_client_cell = tokio::task::block_in_place(|| -> RpcResult<SpvClientCell> {
-            spv.find_best_spv_client(stg_tip_height).map_err(|err| {
-                let message =
-                    format!("failed to get SPV cell base on height {stg_tip_height} from chain");
+        let spv_type_script = spv.storage.spv_contract_type_script().map_err(|err| {
+            let message = "failed to get SPV contract type script from storage".to_owned();
+            log::error!("{message} since {err}");
+            RpcError {
+                code: RpcErrorCode::InternalError,
+                message,
+                data: None,
+            }
+        })?;
+
+        log::debug!(">>> try the cached SPV instance at first");
+
+        let spv_instance = if let Some(spv_instance) = self.load_spv_instance() {
+            log::debug!(">>> the cached SPV instance is {spv_instance}");
+            spv_instance
+        } else {
+            log::debug!(">>> fetch SPV instance from remote since cached is not satisfied");
+            let spv_instance = tokio::task::block_in_place(|| -> RpcResult<SpvInstance> {
+                spv.ckb_cli.find_spv_cells(spv_type_script).map_err(|err| {
+                    let message = format!(
+                        "failed to get SPV cell base on height {stg_tip_height} from chain"
+                    );
+                    log::error!("{message} since {err}");
+                    RpcError {
+                        code: RpcErrorCode::InternalError,
+                        message,
+                        data: None,
+                    }
+                })
+            })?;
+            log::debug!(">>> the fetched SPV instance is {spv_instance}");
+            self.update_spv_instance(spv_instance.clone());
+            spv_instance
+        };
+
+        let spv_client_cell = spv_instance
+            .find_best_spv_client_include_height(stg_tip_height)
+            .map_err(|err| {
+                let message = format!(
+                    "failed to get SPV cell base on height {stg_tip_height} from fetched data"
+                );
                 log::error!("{message} since {err}");
                 RpcError {
                     code: RpcErrorCode::InternalError,
                     message,
                     data: None,
                 }
-            })
-        })?;
-        log::trace!(">>> the best SPV client is {}", spv_client_cell.client);
+            })?;
+
+        log::debug!(">>> the best SPV client is {}", spv_client_cell.client);
 
         let spv_header_root = &spv_client_cell.client.headers_mmr_root;
 
