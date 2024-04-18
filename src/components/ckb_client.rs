@@ -79,7 +79,7 @@ pub trait CkbRpcClientExtension {
     ) -> Result<SpvClientCell> {
         let instance = self.find_spv_cells(spv_type_script)?;
         if let Some(height) = height_opt {
-            instance.find_best_spv_client_include_height(height)
+            instance.find_best_spv_client_not_greater_than_height(height)
         } else {
             instance.find_tip_spv_client()
         }
@@ -174,7 +174,10 @@ impl SpvInstance {
             .cloned()
     }
 
-    pub(crate) fn find_best_spv_client_include_height(&self, height: u32) -> Result<SpvClientCell> {
+    pub(crate) fn find_best_spv_client_not_greater_than_height(
+        &self,
+        height: u32,
+    ) -> Result<SpvClientCell> {
         let SpvInstance { ref info, clients } = self;
         let mut info = info.to_owned();
         for _ in 0..clients.len() {

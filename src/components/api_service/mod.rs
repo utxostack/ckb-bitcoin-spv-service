@@ -268,7 +268,7 @@ impl SpvRpc for SpvRpcImpl {
         };
 
         let spv_client_cell = spv_instance
-            .find_best_spv_client_include_height(stg_tip_height)
+            .find_best_spv_client_not_greater_than_height(stg_tip_height)
             .map_err(|err| {
                 let message = format!(
                     "failed to get SPV cell base on height {stg_tip_height} from fetched data"
