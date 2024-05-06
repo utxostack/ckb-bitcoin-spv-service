@@ -42,7 +42,7 @@ use crate::{
     constants,
     prelude::*,
     result::{Error, Result},
-    utilities::{try_raise_fd_limit, value_parsers},
+    utilities::try_raise_fd_limit,
 };
 
 #[derive(Parser)]
@@ -80,9 +80,8 @@ pub struct Args {
     #[arg(long, default_value = "30")]
     pub(crate) bitcoin_headers_download_batch_size: u32,
 
-    /// The owner of Bitcoin SPV cells.
-    #[arg(long, value_parser = value_parsers::AddressValueParser)]
-    pub(crate) spv_owner: Option<CkbAddress>,
+    #[clap(flatten)]
+    pub(crate) spv_owner_opt: super::SpvOwnerOpt,
 
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
@@ -93,12 +92,7 @@ impl Args {
     pub fn execute(&self) -> Result<()> {
         log::info!("Starting the Bitcoin SPV service");
 
-        if let Some(ref addr) = self.spv_owner {
-            if addr.network() != self.ckb.network {
-                let msg = "The input addresses and the selected network are not matched";
-                return Err(Error::cli(msg));
-            }
-        }
+        self.spv_owner_opt.check_network(self.ckb.network)?;
 
         try_raise_fd_limit();
 
@@ -271,7 +265,9 @@ impl Args {
             let packed_spv_client: packed::SpvClient = spv_client.pack();
             vec![packed_spv_info.as_bytes(), packed_spv_client.as_bytes()]
         };
-        let spv_outputs: Vec<CellOutput> = if let Some(ref addr) = self.spv_owner {
+        let spv_outputs: Vec<CellOutput> = if let Some(lock_script) =
+            self.spv_owner_opt.lock_script()
+        {
             let spv_info_capacity = Capacity::bytes(spv_outputs_data[0].len()).map_err(|err| {
                 let msg = format!(
                     "failed to calculate the capacity for Bitcoin SPV info cell since {err}"
@@ -291,7 +287,7 @@ impl Args {
                 .output
                 .clone()
                 .as_builder()
-                .lock(addr.into())
+                .lock(lock_script.clone())
                 .build_exact_capacity(spv_info_capacity)
                 .map_err(|err| {
                     let msg = format!(
@@ -305,7 +301,7 @@ impl Args {
                 .output
                 .clone()
                 .as_builder()
-                .lock(addr.into())
+                .lock(lock_script)
                 .build_exact_capacity(spv_client_capacity)
                 .map_err(|err| {
                     let msg = format!(
@@ -539,7 +535,7 @@ impl Args {
             }
             outputs_data
         };
-        let spv_outputs = if let Some(ref addr) = self.spv_owner {
+        let spv_outputs = if let Some(lock_script) = self.spv_owner_opt.lock_script() {
             let spv_info_capacity = Capacity::bytes(spv_outputs_data[0].len()).map_err(|err| {
                 let msg = format!(
                     "failed to calculate the capacity for Bitcoin SPV info cell since {err}"
@@ -559,7 +555,7 @@ impl Args {
                 .output
                 .clone()
                 .as_builder()
-                .lock(addr.into())
+                .lock(lock_script.clone())
                 .build_exact_capacity(spv_info_capacity)
                 .map_err(|err| {
                     let msg = format!(
@@ -574,7 +570,7 @@ impl Args {
                     .output
                     .clone()
                     .as_builder()
-                    .lock(addr.into())
+                    .lock(lock_script.clone())
                     .build_exact_capacity(spv_client_capacity)
                     .map_err(|err| {
                         let msg = format!(

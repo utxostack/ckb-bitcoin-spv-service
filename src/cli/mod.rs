@@ -1,7 +1,10 @@
 //! The command line argument.
 
-use ckb_sdk::{rpc::CkbRpcClient, types::NetworkType};
-use ckb_types::core::FeeRate;
+use ckb_sdk::{
+    rpc::CkbRpcClient,
+    types::{Address, NetworkType},
+};
+use ckb_types::{core::FeeRate, packed::Script};
 use clap::{Args, Parser, Subcommand};
 use clap_verbosity_flag::{InfoLevel, Verbosity};
 use url::Url;
@@ -9,7 +12,7 @@ use url::Url;
 use crate::{
     components::BitcoinClient,
     prelude::*,
-    result::Result,
+    result::{Error, Result},
     utilities::{value_parsers, Key256Bits},
 };
 
@@ -96,6 +99,55 @@ pub struct CkbRoArgs {
     pub(crate) network: NetworkType,
 }
 
+#[derive(Parser)]
+pub struct SpvOwner {
+    /// The owner of Bitcoin SPV cells.
+    ///
+    /// ### Warnings
+    ///
+    /// The owner should be an address which uses a ACP-like script.
+    ///
+    /// Current standard ACP lock isn't satisfied, because it's has the
+    /// following limits:
+    ///
+    /// > if 2 input cells are using the same type script, or are both missing
+    ///   type scripts, the lock returns with an error state.
+    ///
+    /// > if 2 output cells are using the same type script, or are both missing
+    ///   type scripts, the lock returns with an error state.
+    ///
+    /// ### References
+    ///
+    /// - [Anyone-Can-Pay Lock (a.k.a ACP)](https://github.com/nervosnetwork/rfcs/blob/198fc90ab7582953ed85a6655e88e51346857475/rfcs/0026-anyone-can-pay/0026-anyone-can-pay.md)
+    #[arg(long, value_parser = value_parsers::AddressValueParser)]
+    pub(crate) spv_owner: Address,
+}
+
+#[derive(Parser)]
+pub struct SpvOwnerOpt {
+    /// The owner of Bitcoin SPV cells.
+    /// If no owner is provided, the previous owner will be kept.
+    ///
+    /// ### Warnings
+    ///
+    /// The owner should be an address which uses a ACP-like script.
+    ///
+    /// Current standard ACP lock isn't satisfied, because it's has the
+    /// following limits:
+    ///
+    /// > if 2 input cells are using the same type script, or are both missing
+    ///   type scripts, the lock returns with an error state.
+    ///
+    /// > if 2 output cells are using the same type script, or are both missing
+    ///   type scripts, the lock returns with an error state.
+    ///
+    /// ### References
+    ///
+    /// - [Anyone-Can-Pay Lock (a.k.a ACP)](https://github.com/nervosnetwork/rfcs/blob/198fc90ab7582953ed85a6655e88e51346857475/rfcs/0026-anyone-can-pay/0026-anyone-can-pay.md)
+    #[arg(long, value_parser = value_parsers::AddressValueParser)]
+    pub(crate) spv_owner: Option<Address>,
+}
+
 #[derive(Args)]
 #[group(multiple = false)]
 pub struct FeeRateArgs {
@@ -110,16 +162,20 @@ pub struct FeeRateArgs {
 
     /// [Experimental] Enable dynamic fee rate for CKB transactions.
     ///
-    /// The actual fee rate will be the `median` fee rate which is fetched through the CKB RPC method `get_fee_rate_statistics`.
+    /// The actual fee rate will be the `median` fee rate which is fetched
+    /// through the CKB RPC method `get_fee_rate_statistics`.
     ///
     /// For security, a hard limit is required.
-    /// When the returned dynamic fee rate is larger than the hard limit, the hard limit will be used.
+    /// When the returned dynamic fee rate is larger than the hard limit, the
+    /// hard limit will be used.
     ///
     /// ### Warning
     ///
     /// Users have to make sure the remote CKB node they used are trustsed.
     ///
-    /// Ref: <https://github.com/nervosnetwork/ckb/tree/v0.114.0/rpc#method-get_fee_rate_statistics>
+    /// ### References
+    ///
+    /// - [CKB JSON-RPC method `get_fee_rate_statistics`](https://github.com/nervosnetwork/ckb/tree/v0.114.0/rpc#method-get_fee_rate_statistics)
     #[arg(
         group = "dynamic-fee-rate",
         conflicts_with = "fixed-fee-rate",
@@ -221,6 +277,48 @@ impl CkbArgs {
 impl CkbRoArgs {
     pub fn client(&self) -> CkbRpcClient {
         CkbRpcClient::new(self.ckb_endpoint.as_str())
+    }
+}
+
+impl AsRef<Address> for SpvOwner {
+    fn as_ref(&self) -> &Address {
+        &self.spv_owner
+    }
+}
+
+impl SpvOwner {
+    pub fn check_network(&self, expected: NetworkType) -> Result<()> {
+        let actual = self.as_ref().network();
+        if actual == expected {
+            Ok(())
+        } else {
+            let msg = "The input addresses and the selected network are not matched";
+            Err(Error::cli(msg))
+        }
+    }
+
+    pub fn lock_script(&self) -> Script {
+        self.as_ref().into()
+    }
+}
+
+impl SpvOwnerOpt {
+    pub fn check_network(&self, expected: NetworkType) -> Result<()> {
+        let is_same_network = self
+            .spv_owner
+            .as_ref()
+            .map(|actual| actual.network() == expected)
+            .unwrap_or(true);
+        if is_same_network {
+            Ok(())
+        } else {
+            let msg = "The input addresses and the selected network are not matched";
+            Err(Error::cli(msg))
+        }
+    }
+
+    pub fn lock_script(&self) -> Option<Script> {
+        self.spv_owner.as_ref().map(Into::into)
     }
 }
 
