@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust Toolchain
         run: |
-          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component rustfmt
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --no-self-update --profile minimal --component rustfmt
           rustup override set ${{ env.RUST_TOOLCHAIN }}
       - name: Format Check
         run: make fmt
@@ -31,7 +31,7 @@ jobs:
         uses: actions/checkout@v4
       - name: Install Rust Toolchain
         run: |
-          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal --component clippy
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --no-self-update --profile minimal --component clippy
           rustup override set ${{ env.RUST_TOOLCHAIN }}
       - name: Lint Check
         run: make clippy
@@ -51,7 +51,7 @@ jobs:
           submodules: recursive
       - name: Install Rust Toolchain
         run: |
-          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --profile minimal
+          rustup toolchain install ${{ env.RUST_TOOLCHAIN }} --no-self-update --profile minimal
           rustup override set ${{ env.RUST_TOOLCHAIN }}
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
