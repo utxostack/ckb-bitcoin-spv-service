@@ -28,7 +28,10 @@ use ckb_sdk::{
 };
 use ckb_types::{
     core::{Capacity, DepType},
-    packed::{Byte32, Bytes as PackedBytes, BytesOpt, CellDep, CellInput, CellOutput, WitnessArgs},
+    packed::{
+        Byte32, Bytes as PackedBytes, BytesOpt, CellDep, CellInput, CellOutput, OutPoint,
+        WitnessArgs,
+    },
     prelude::*,
     H256,
 };
@@ -76,6 +79,13 @@ pub struct Args {
     #[arg(long, default_value = "10")]
     pub(crate) spv_headers_update_limit: NonZeroU32,
 
+    /// The out point of the Bitcoin SPV contract.
+    ///
+    /// This parameter will override the value in the storage.
+    /// If this parameter is not provided, the value in the storage will be used.
+    #[arg(long, value_parser = value_parsers::OutPointValueParser)]
+    pub(crate) spv_contract_out_point: Option<OutPoint>,
+
     /// The batch size that how many Bitcoin headers will be downloaded at once.
     #[arg(long, default_value = "30")]
     pub(crate) bitcoin_headers_download_batch_size: u32,
@@ -104,6 +114,16 @@ impl Args {
             );
             return Err(Error::other(msg));
         }
+
+        if let Some(ref spv_contract_out_point) = self.spv_contract_out_point {
+            let spv_contract_cell_dep = CellDep::new_builder()
+                .out_point(spv_contract_out_point.clone())
+                .dep_type(DepType::Code.into())
+                .build();
+            let spv_type_script = storage.spv_contract_type_script()?;
+            storage.save_cells_state(spv_type_script, spv_contract_cell_dep)?;
+        }
+
         let ckb_cli = self.ckb.client();
         let btc_cli = self.bitcoin.client();
 
