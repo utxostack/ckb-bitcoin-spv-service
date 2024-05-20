@@ -314,7 +314,7 @@ impl SpvRpc for SpvRpcImpl {
             log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
             let stg_header_root = packed_stg_header_root.unpack();
             log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
-            let desc = "the SPV instance on chain is not unknown, reorg is required";
+            let desc = "the SPV instance on chain is unknown, reorg is required";
             return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
         }
 
