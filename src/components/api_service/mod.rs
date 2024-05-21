@@ -90,7 +90,30 @@ impl SpvRpcImpl {
         }
     }
 
-    fn load_spv_instance(&self) -> Option<SpvInstance> {
+    fn load_spv_instance(
+        &self,
+        stg_tip_height: u32,
+        target_confirmed_height: u32,
+    ) -> Result<Option<SpvInstance>> {
+        let spv_instance = match self.load_cache_spv_instance() {
+            Some(instance) => instance,
+            None => return Ok(None),
+        };
+
+        let spv_client_cell =
+            spv_instance.find_best_spv_client_not_greater_than_height(stg_tip_height)?;
+
+        let spv_header_root = &spv_client_cell.client.headers_mmr_root;
+        let spv_best_height = spv_header_root.max_height;
+
+        if spv_best_height < target_confirmed_height {
+            return Ok(None);
+        }
+
+        Ok(Some(spv_instance))
+    }
+
+    fn load_cache_spv_instance(&self) -> Option<SpvInstance> {
         if let Some(cached) = self
             .cached_spv_instance
             .read()
@@ -244,32 +267,32 @@ impl SpvRpc for SpvRpcImpl {
 
         log::debug!(">>> try the cached SPV instance at first");
 
-        let (mut spv_instance, from_cache) = if let Some(spv_instance) = self.load_spv_instance() {
+        let spv_instance = if let Ok(Some(spv_instance)) =
+            self.load_spv_instance(stg_tip_height, target_height + confirmations)
+        {
             log::debug!(">>> the cached SPV instance is {spv_instance}");
-            (spv_instance, true)
+            spv_instance
         } else {
             log::debug!(">>> fetch SPV instance from remote since cached is not satisfied");
             let spv_instance = tokio::task::block_in_place(|| -> RpcResult<SpvInstance> {
-                spv.ckb_cli
-                    .find_spv_cells(spv_type_script.clone())
-                    .map_err(|err| {
-                        let message = format!(
-                            "failed to get SPV cell base on height {stg_tip_height} from chain"
-                        );
-                        log::error!("{message} since {err}");
-                        RpcError {
-                            code: RpcErrorCode::InternalError,
-                            message,
-                            data: None,
-                        }
-                    })
+                spv.ckb_cli.find_spv_cells(spv_type_script).map_err(|err| {
+                    let message = format!(
+                        "failed to get SPV cell base on height {stg_tip_height} from chain"
+                    );
+                    log::error!("{message} since {err}");
+                    RpcError {
+                        code: RpcErrorCode::InternalError,
+                        message,
+                        data: None,
+                    }
+                })
             })?;
             log::debug!(">>> the fetched SPV instance is {spv_instance}");
             self.update_spv_instance(spv_instance.clone());
-            (spv_instance, false)
+            spv_instance
         };
 
-        let mut spv_client_cell = spv_instance
+        let spv_client_cell = spv_instance
             .find_best_spv_client_not_greater_than_height(stg_tip_height)
             .map_err(|err| {
                 let message = format!(
@@ -286,43 +309,7 @@ impl SpvRpc for SpvRpcImpl {
         log::debug!(">>> the best SPV client is {}", spv_client_cell.client);
 
         let spv_header_root = &spv_client_cell.client.headers_mmr_root;
-        let spv_best_height = spv_header_root.max_height;
-        if spv_best_height < target_height + confirmations && from_cache {
-            // Fetch SPV instance from network again
-            spv_instance = tokio::task::block_in_place(|| -> RpcResult<SpvInstance> {
-                spv.ckb_cli.find_spv_cells(spv_type_script).map_err(|err| {
-                    let message = format!(
-                        "failed to get SPV cell base on height {stg_tip_height} from chain"
-                    );
-                    log::error!("{message} since {err}");
-                    RpcError {
-                        code: RpcErrorCode::InternalError,
-                        message,
-                        data: None,
-                    }
-                })
-            })?;
-            log::debug!(">>> the fetched SPV instance is {spv_instance}");
-            self.update_spv_instance(spv_instance.clone());
 
-            spv_client_cell = spv_instance
-                .find_best_spv_client_not_greater_than_height(stg_tip_height)
-                .map_err(|err| {
-                    let message = format!(
-                        "failed to get SPV cell base on height {stg_tip_height} from fetched data"
-                    );
-                    log::error!("{message} since {err}");
-                    RpcError {
-                        code: RpcErrorCode::InternalError,
-                        message,
-                        data: None,
-                    }
-                })?;
-
-            log::debug!(">>> the best SPV client is {}", spv_client_cell.client);
-        }
-
-        let spv_header_root = &spv_client_cell.client.headers_mmr_root;
         let spv_best_height = spv_header_root.max_height;
         if spv_best_height < target_height + confirmations {
             let desc = format!(
