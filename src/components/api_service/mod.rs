@@ -90,7 +90,30 @@ impl SpvRpcImpl {
         }
     }
 
-    fn load_spv_instance(&self) -> Option<SpvInstance> {
+    fn load_spv_instance(
+        &self,
+        stg_tip_height: u32,
+        target_confirmed_height: u32,
+    ) -> Result<Option<SpvInstance>> {
+        let spv_instance = match self.load_cache_spv_instance() {
+            Some(instance) => instance,
+            None => return Ok(None),
+        };
+
+        let spv_client_cell =
+            spv_instance.find_best_spv_client_not_greater_than_height(stg_tip_height)?;
+
+        let spv_header_root = &spv_client_cell.client.headers_mmr_root;
+        let spv_best_height = spv_header_root.max_height;
+
+        if spv_best_height < target_confirmed_height {
+            return Ok(None);
+        }
+
+        Ok(Some(spv_instance))
+    }
+
+    fn load_cache_spv_instance(&self) -> Option<SpvInstance> {
         if let Some(cached) = self
             .cached_spv_instance
             .read()
@@ -244,7 +267,9 @@ impl SpvRpc for SpvRpcImpl {
 
         log::debug!(">>> try the cached SPV instance at first");
 
-        let spv_instance = if let Some(spv_instance) = self.load_spv_instance() {
+        let spv_instance = if let Ok(Some(spv_instance)) =
+            self.load_spv_instance(stg_tip_height, target_height + confirmations)
+        {
             log::debug!(">>> the cached SPV instance is {spv_instance}");
             spv_instance
         } else {
@@ -314,7 +339,7 @@ impl SpvRpc for SpvRpcImpl {
             log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
             let stg_header_root = packed_stg_header_root.unpack();
             log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
-            let desc = "the SPV instance on chain is not unknown, reorg is required";
+            let desc = "the SPV instance on chain is unknown, reorg is required";
             return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
         }
 
