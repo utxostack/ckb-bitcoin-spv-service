@@ -153,6 +153,7 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
         &self,
         prev_height: u32,
         limit: NonZeroU32,
+        flags: u8,
     ) -> Result<(SpvClient, packed::SpvUpdate)> {
         let mut tip_height = self.get_tip_bitcoin_height()?;
         if tip_height > prev_height.saturating_add(limit.into()) {
@@ -200,7 +201,7 @@ pub(crate) trait BitcoinSpvStorage: InternalBitcoinSpvStorage {
                     tip_header.time
                 );
                 let next_target =
-                    calculate_next_target(curr_target, start_header.time, tip_header.time);
+                    calculate_next_target(curr_target, start_header.time, tip_header.time, flags);
                 log::trace!("calculated new target  {next_target:#x}");
                 let next_bits = next_target.to_compact_lossy();
                 let next_target: Target = next_bits.into();

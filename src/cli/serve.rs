@@ -181,6 +181,7 @@ impl Args {
                     let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
                         spv_tip_height,
                         self.spv_headers_update_limit,
+                        input.info.get_flags()?,
                     )?;
 
                     let tx_hash =
@@ -193,8 +194,11 @@ impl Args {
 
                     let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
 
-                    let (spv_client, spv_update) = storage
-                        .generate_spv_client_and_spv_update(spv_tip_height, NonZeroU32::MAX)?;
+                    let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
+                        spv_tip_height,
+                        NonZeroU32::MAX,
+                        input.info.get_flags()?,
+                    )?;
 
                     let tx_hash =
                         self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;

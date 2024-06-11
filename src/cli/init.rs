@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use bitcoin::blockdata::constants::DIFFCHANGE_INTERVAL;
 use ckb_bitcoin_spv_verifier::{
-    constants::FLAG_DISABLE_DIFFICULTY_CHECK,
+    constants::FLAG_CHAIN_TYPE_TESTNET,
     types::{core::Hash as BitcoinHash, packed, prelude::Pack as VPack},
 };
 use ckb_jsonrpc_types::TransactionView;
@@ -183,7 +183,7 @@ impl Args {
             let type_id = BitcoinHash::from_bytes_ref(&type_id_array);
             let mut flags = 0u8;
             if self.disable_difficulty_check {
-                flags |= FLAG_DISABLE_DIFFICULTY_CHECK;
+                flags |= FLAG_CHAIN_TYPE_TESTNET;
             }
             let args = packed::SpvTypeArgs::new_builder()
                 .type_id(type_id.pack())
