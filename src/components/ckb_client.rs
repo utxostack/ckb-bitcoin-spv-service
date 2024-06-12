@@ -60,6 +60,24 @@ impl SpvInfoCell {
             0
         }
     }
+
+    pub(crate) fn get_flags(&self) -> Result<u8> {
+        let script_args = self
+            .cell
+            .output
+            .type_()
+            .to_opt()
+            .ok_or_else(|| Error::other("the SPV info cell has no type script"))?
+            .args();
+        let script_args_slice = script_args.as_reader().raw_data();
+        let args = packed::SpvTypeArgsReader::from_slice(script_args_slice).map_err(|err| {
+            let msg =
+                format!("failed to parse the type script args for the SPV info cell since {err}");
+            Error::other(msg)
+        })?;
+        let flags: u8 = args.flags().into();
+        Ok(flags)
+    }
 }
 
 pub trait CkbRpcClientExtension {

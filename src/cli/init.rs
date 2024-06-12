@@ -4,7 +4,7 @@ use std::{collections::HashMap, path::PathBuf};
 
 use bitcoin::blockdata::constants::DIFFCHANGE_INTERVAL;
 use ckb_bitcoin_spv_verifier::{
-    constants::FLAG_DISABLE_DIFFICULTY_CHECK,
+    constants::{FLAG_CHAIN_TYPE_MAINNET, FLAG_CHAIN_TYPE_SIGNET, FLAG_CHAIN_TYPE_TESTNET},
     types::{core::Hash as BitcoinHash, packed, prelude::Pack as VPack},
 };
 use ckb_jsonrpc_types::TransactionView;
@@ -31,7 +31,7 @@ use ckb_types::{
     prelude::*,
     H256,
 };
-use clap::{Args as ClapArgs, Parser};
+use clap::{Args as ClapArgs, Parser, ValueEnum};
 use secp256k1::SecretKey;
 
 use crate::{
@@ -78,14 +78,9 @@ pub struct Args {
     #[clap(flatten)]
     pub(crate) spv_owner: super::SpvOwner,
 
-    /// Disable the on-chain difficulty check.
-    ///
-    /// ### Warning
-    ///
-    /// For testing purpose only.
-    /// Do NOT enable this flag in production environment.
+    /// Bitcoin chain type.
     #[arg(long)]
-    pub(crate) disable_difficulty_check: bool,
+    pub(crate) bitcoin_chain_type: BitcoinChainType,
 
     /// Perform all steps without sending.
     #[arg(long, hide = true)]
@@ -104,14 +99,22 @@ pub struct CodeHash {
     pub(crate) spv_contract_type_hash: Option<H256>,
 }
 
+#[derive(Clone, PartialEq, ValueEnum)]
+pub enum BitcoinChainType {
+    Mainnet,
+    Testnet,
+    Signet,
+}
+
 impl Args {
     // TODO Split this method into several smaller methods.
     pub fn execute(&self) -> Result<()> {
         log::info!("Try to initialize a Bitcoin SPV instance on CKB");
 
-        if self.disable_difficulty_check && self.ckb.network == NetworkType::Mainnet {
-            let msg = "For safety, the option `self.disable_difficulty_check` \
-                are not allowed on the mainnet";
+        if self.bitcoin_chain_type != BitcoinChainType::Mainnet
+            && self.ckb.network == NetworkType::Mainnet
+        {
+            let msg = "The Bitcoin chain type is not mainnet, but the CKB network is mainnet";
             return Err(Error::other(msg));
         }
 
@@ -182,8 +185,10 @@ impl Args {
             let type_id_array = calculate_type_id(input0.cell_input(), cells_count);
             let type_id = BitcoinHash::from_bytes_ref(&type_id_array);
             let mut flags = 0u8;
-            if self.disable_difficulty_check {
-                flags |= FLAG_DISABLE_DIFFICULTY_CHECK;
+            match self.bitcoin_chain_type {
+                BitcoinChainType::Mainnet => flags |= FLAG_CHAIN_TYPE_MAINNET,
+                BitcoinChainType::Testnet => flags |= FLAG_CHAIN_TYPE_TESTNET,
+                BitcoinChainType::Signet => flags |= FLAG_CHAIN_TYPE_SIGNET,
             }
             let args = packed::SpvTypeArgs::new_builder()
                 .type_id(type_id.pack())
