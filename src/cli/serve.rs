@@ -196,7 +196,7 @@ impl Args {
 
                     let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
                         spv_tip_height,
-                        NonZeroU32::MAX,
+                        self.spv_headers_update_limit,
                         input.info.get_flags()?,
                     )?;
 
