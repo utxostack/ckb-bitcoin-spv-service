@@ -9,7 +9,11 @@ use std::{
     thread, time,
 };
 
-use ckb_bitcoin_spv_verifier::types::{core::SpvClient, packed, prelude::Pack as VPack};
+use ckb_bitcoin_spv_verifier::types::{
+    core::{BitcoinChainType, SpvClient},
+    packed,
+    prelude::Pack as VPack,
+};
 use ckb_jsonrpc_types::{Status, TransactionView};
 use ckb_sdk::{
     core::TransactionBuilder,
@@ -194,11 +198,13 @@ impl Args {
 
                     let spv_tip_height = input.curr.client.headers_mmr_root.max_height;
 
-                    let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
-                        spv_tip_height,
-                        NonZeroU32::MAX,
-                        input.info.get_flags()?,
-                    )?;
+                    let flags = input.info.get_flags()?;
+                    let limit = match flags.into() {
+                        BitcoinChainType::Testnet => self.spv_headers_update_limit,
+                        _ => NonZeroU32::MAX,
+                    };
+                    let (spv_client, spv_update) =
+                        storage.generate_spv_client_and_spv_update(spv_tip_height, limit, flags)?;
 
                     let tx_hash =
                         self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
