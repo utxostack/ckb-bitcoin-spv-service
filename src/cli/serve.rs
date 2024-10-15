@@ -52,6 +52,8 @@ use crate::{
     utilities::{try_raise_fd_limit, value_parsers},
 };
 
+const SPV_RESET_TIP_OFFSET: u32 = 1200;
+
 #[derive(Parser)]
 pub struct Args {
     #[clap(flatten)]
@@ -205,6 +207,34 @@ impl Args {
                     };
                     let (spv_client, spv_update) =
                         storage.generate_spv_client_and_spv_update(spv_tip_height, limit, flags)?;
+
+                    let tx_hash =
+                        self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
+
+                    prev_tx_hash = Some(tx_hash);
+                }
+                SpvOperation::Reset(input) => {
+                    let flags = input.info.get_flags()?;
+                    if BitcoinChainType::Testnet != flags.into() {
+                        let msg = "failed to reorg since no common parent between SPV instance and storage";
+                        return Err(Error::other(msg));
+                    }
+
+                    log::info!(
+                        "stale length: {:?}, clients count: {:?}",
+                        input.stale.len(),
+                        input.info.clients_count
+                    );
+                    log::info!("Try to reset SPV instance");
+
+                    let spv_tip_height =
+                        input.curr.client.headers_mmr_root.max_height - SPV_RESET_TIP_OFFSET;
+
+                    let (spv_client, spv_update) = storage.generate_spv_client_and_spv_update(
+                        spv_tip_height,
+                        self.spv_headers_update_limit,
+                        flags,
+                    )?;
 
                     let tx_hash =
                         self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
