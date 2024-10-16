@@ -36,6 +36,7 @@ pub struct SpvReorgInput {
 pub enum SpvOperation {
     Update(SpvUpdateInput),
     Reorg(SpvReorgInput),
+    Reset(SpvReorgInput),
 }
 
 impl SpvService {
@@ -65,7 +66,12 @@ impl SpvService {
             let stg_header_root_curr = packed_stg_header_root_curr.unpack();
             log::warn!("[storage] header#{spv_height_curr}; mmr-root {stg_header_root_curr}");
             let input = self.prepare_reorg_input(ins)?;
-            return Ok(SpvOperation::Reorg(input));
+            if input.info.clients_count as usize == input.stale.len() {
+                log::warn!("[onchain] all SPV clients are stale, resetting");
+                return Ok(SpvOperation::Reset(input));
+            } else {
+                return Ok(SpvOperation::Reorg(input));
+            }
         }
 
         let next_tip_client_id = ins.info.next_tip_client_id();
@@ -130,8 +136,13 @@ impl SpvService {
             stale.push(cell.clone());
             info.info.tip_client_id = info.prev_tip_client_id();
         }
-        let msg = "failed to reorg since no common parent between SPV instance and storage";
-        Err(Error::other(msg))
+        log::warn!("failed to reorg since no common parent between SPV instance and storage");
+        let input = SpvReorgInput {
+            info: info.clone(),
+            curr: clients.get(&info.info.tip_client_id).unwrap().clone(),
+            stale,
+        };
+        Ok(input)
     }
 
     pub(crate) fn sync_storage(&self, batch_size: u32) -> Result<bool> {
