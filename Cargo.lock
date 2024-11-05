@@ -379,7 +379,7 @@ dependencies = [
 [[package]]
 name = "ckb-bitcoin-spv-verifier"
 version = "0.1.0"
-source = "git+https://github.com/ckb-cell/ckb-bitcoin-spv?rev=bfc71d7#bfc71d7daf17e96f34e8e287f45254e512383330"
+source = "git+https://github.com/ckb-cell/ckb-bitcoin-spv?rev=6c3f3d1#6c3f3d1aa8c109bd1e52b5beb2ed40c5a9c2e949"
 dependencies = [
  "bitcoin",
  "bitcoin_hashes",
