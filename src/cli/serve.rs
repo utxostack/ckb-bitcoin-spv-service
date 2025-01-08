@@ -191,9 +191,13 @@ impl Args {
                     )?;
 
                     let tx_hash =
-                        self.update_spv_cells(&spv_service, input, spv_client, spv_update)?;
+                        self.update_spv_cells(&spv_service, input, spv_client, spv_update);
 
-                    prev_tx_hash = Some(tx_hash);
+                    if let Err(e) = &tx_hash {
+                        log::warn!("Failed to update SPV instance: {:?}", e);
+                    }
+
+                    prev_tx_hash = tx_hash.ok();
                 }
                 SpvOperation::Reorg(input) => {
                     log::info!("Try to reorg SPV instance");
@@ -208,10 +212,13 @@ impl Args {
                     let (spv_client, spv_update) =
                         storage.generate_spv_client_and_spv_update(spv_tip_height, limit, flags)?;
 
-                    let tx_hash =
-                        self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
+                    let tx_hash = self.reorg_spv_cells(&spv_service, input, spv_client, spv_update);
 
-                    prev_tx_hash = Some(tx_hash);
+                    if let Err(e) = &tx_hash {
+                        log::warn!("Failed to reorg SPV instance: {:?}", e);
+                    }
+
+                    prev_tx_hash = tx_hash.ok();
                 }
                 SpvOperation::Reset(input) => {
                     let flags = input.info.get_flags()?;
@@ -236,10 +243,13 @@ impl Args {
                         flags,
                     )?;
 
-                    let tx_hash =
-                        self.reorg_spv_cells(&spv_service, input, spv_client, spv_update)?;
+                    let tx_hash = self.reorg_spv_cells(&spv_service, input, spv_client, spv_update);
 
-                    prev_tx_hash = Some(tx_hash);
+                    if let Err(e) = &tx_hash {
+                        log::warn!("Failed to reset SPV instance: {:?}", e);
+                    }
+
+                    prev_tx_hash = tx_hash.ok();
                 }
             }
         }
