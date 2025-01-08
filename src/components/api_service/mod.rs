@@ -396,11 +396,14 @@ impl SpvRpc for SpvRpcImpl {
                     }
                 })?;
 
+            let packed_spv_header_root = spv_header_root.pack();
+
             if packed_stg_header_root.as_slice() != packed_spv_header_root.as_slice() {
                 log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
                 let stg_header_root = packed_stg_header_root.unpack();
                 log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
                 let desc = "the SPV instance on chain is unknown, reorg is required";
+                log::warn!("{desc}");
                 return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
             }
         }
