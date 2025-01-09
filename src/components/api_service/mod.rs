@@ -292,7 +292,11 @@ impl SpvRpc for SpvRpcImpl {
             spv_instance
         };
 
-        let spv_client_cell = spv_instance
+        // First Strategy: find the best SPV client not greater than the storage tip height.
+        // The spv client found has the longest lifetime and
+        // is most likely to cover the height of the block where the bitcoin tx is located.
+        // The downside is that it can be affected by reorg.
+        let mut spv_client_cell = spv_instance
             .find_best_spv_client_not_greater_than_height(stg_tip_height)
             .map_err(|err| {
                 let message = format!(
@@ -339,8 +343,69 @@ impl SpvRpc for SpvRpcImpl {
             log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
             let stg_header_root = packed_stg_header_root.unpack();
             log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
-            let desc = "the SPV instance on chain is unknown, reorg is required";
-            return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
+            let desc = "Strategy 1 failed to find a valid SPV client due to reorg, switching to strategy 2 for further lookup";
+            log::warn!("{desc}");
+
+            // Second Strategy: Find the Nth (20% of total) spv cell before the tip spv cell.
+            // The cell is far enough away from the tip to be less affected by the reorg,
+            // and has a relatively long survival period.
+            // But it may not be able to cover the height of the block where the newer bitcoin tx is located
+            let count = spv_instance.clients.len() / 5;
+            spv_client_cell = spv_instance
+                .find_spv_client_before_tip(count)
+                .map_err(|err| {
+                    let message =
+                        format!("failed to get the {count}th SPV client before the tip client");
+                    log::error!("{message} since {err}");
+                    RpcError {
+                        code: RpcErrorCode::InternalError,
+                        message,
+                        data: None,
+                    }
+                })?;
+
+            log::debug!(
+                ">>> the best SPV client is {} found in the {} blocks before tip",
+                spv_client_cell.client,
+                count
+            );
+
+            let spv_header_root = &spv_client_cell.client.headers_mmr_root;
+
+            let spv_best_height = spv_header_root.max_height;
+            if spv_best_height < target_height + confirmations {
+                let desc = format!(
+                    "target transaction is in header#{target_height} \
+                    and it requires {confirmations} confirmations, \
+                    but the best SPV header is header#{spv_best_height}",
+                );
+                return Err(ApiErrorCode::OnchainTxUnconfirmed.with_desc(desc));
+            }
+
+            let packed_stg_header_root = spv
+                .storage
+                .generate_headers_root(spv_best_height)
+                .map_err(|err| {
+                    let message =
+                        format!("failed to generate headers MMR root for height {spv_best_height}");
+                    log::error!("{message} since {err}");
+                    RpcError {
+                        code: RpcErrorCode::InternalError,
+                        message,
+                        data: None,
+                    }
+                })?;
+
+            let packed_spv_header_root = spv_header_root.pack();
+
+            if packed_stg_header_root.as_slice() != packed_spv_header_root.as_slice() {
+                log::warn!("[onchain] header#{spv_best_height}; mmr-root {spv_header_root}");
+                let stg_header_root = packed_stg_header_root.unpack();
+                log::warn!("[storage] header#{spv_best_height}; mmr-root {stg_header_root}");
+                let desc = "the SPV instance on chain is unknown, reorg is required";
+                log::warn!("{desc}");
+                return Err(ApiErrorCode::OnchainReorgRequired.with_desc(desc));
+            }
         }
 
         let header_proof = spv
